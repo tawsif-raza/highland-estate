@@ -46,7 +46,7 @@ export default function Navbar() {
             </Link>
           ))}
           <Link
-            href="#book"
+            href="mailto:tawsifk35@gmail.com?subject=Booking%20Inquiry%20-%20The%20Highland%20Estate"
             className="rounded-full bg-primary px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary/90"
           >
             Book A Stay
@@ -95,7 +95,7 @@ export default function Navbar() {
             </Link>
           ))}
           <Link
-            href="#book"
+            href="mailto:tawsifk35@gmail.com?subject=Booking%20Inquiry%20-%20The%20Highland%20Estate"
             onClick={() => setMenuOpen(false)}
             className="rounded-full bg-primary px-6 py-2.5 text-center text-sm font-medium text-white transition-colors hover:bg-primary/90"
           >

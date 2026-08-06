@@ -1,9 +1,11 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import { useState } from "react";
 
 type Room = {
+  id: string;
   image: string;
   title: string;
   specs: string;
@@ -13,25 +15,29 @@ type Room = {
 
 const ROOMS: Room[] = [
   {
+    id: "mist-cabin",
     image: "/images/room-mist-cabin.png",
     title: "The Mist Cabin",
     specs: "450 sq ft • Forest View • King Bed",
-    price: "₹14,500 / night",
+    price: "175$/night",
     features: "Private balcony, fireplace, handcrafted coffee bar.",
   },
   {
+    id: "canopy-suite",
     image: "/images/room-canopy.png",
     title: "The Canopy Suite",
     specs: "700 sq ft • Valley View • King Bed",
-    price: "₹22,000 / night",
+    price: "265$/night",
     features: "Panoramic glass walls, private Jacuzzi, personal butler.",
   },
   {
+    id: "plantation-villa",
     image: "/images/room-villa.png",
     title: "The Plantation Villa",
     specs: "1,200 sq ft • Private Estate • 2 Bedrooms",
-    price: "₹38,000 / night",
-    features: "Private plunge pool, coffee tasting deck, outdoor shower.",
+    price: "450$/night",
+    features:
+      "Private plunge pool, coffee tasting deck, outdoor shower, and a dedicated concierge for the full length of your stay.",
   },
 ];
 
@@ -123,12 +129,14 @@ export default function RoomsSection() {
               room feels entirely your own for the length of your visit.
             </p>
 
-            <button
-              type="button"
-              className="mt-8 w-full rounded-full bg-primary py-3 text-sm font-medium text-white transition-colors hover:bg-primary/90"
+            <Link
+              href={`mailto:tawsifk35@gmail.com?subject=${encodeURIComponent(
+                `Inquiry: ${selectedRoom.title}`,
+              )}`}
+              className="mt-8 block w-full rounded-full bg-primary py-3 text-center text-sm font-medium text-white transition-colors hover:bg-primary/90"
             >
               Inquire About This Room
-            </button>
+            </Link>
           </div>
         </div>
       )}

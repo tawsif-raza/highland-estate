@@ -25,7 +25,7 @@ const CONNECT_LINKS = [
 
 export default function Footer() {
   return (
-    <footer className="bg-dark-accent py-16 text-accent">
+    <footer id="contact" className="bg-dark-accent py-16 text-accent">
       <div className="mx-auto max-w-7xl px-6 lg:px-8">
         <div className="grid grid-cols-1 gap-12 md:grid-cols-3">
           <div>
