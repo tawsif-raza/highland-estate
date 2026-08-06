@@ -24,6 +24,19 @@ export interface DateRange {
   end: string; // ISO date, exclusive checkout date
 }
 
+export interface SpecialService {
+  id: string;
+  title: string;
+  description: string;
+  price: number; // INR
+}
+
+export interface SpecialServiceLine {
+  id: string;
+  title: string;
+  price: number;
+}
+
 export interface Booking {
   bookingId: string;
   roomId: string;
@@ -34,6 +47,9 @@ export interface Booking {
   guests: number;
   total: number;
   createdAt: string;
+  specialServices: SpecialServiceLine[];
+  comped: boolean;
+  originalTotal: number;
 }
 
 export interface CreateBookingInput {
@@ -43,6 +59,11 @@ export interface CreateBookingInput {
   checkIn: string;
   checkOut: string;
   guests: number;
+  specialServiceIds?: string[];
+  // Internal-only: never accept this from a tool-call argument. Route.ts
+  // sets this from its own server-side VIP detection, not from anything
+  // the model or guest can supply directly.
+  comped?: boolean;
 }
 
 // Coorg/Chikmagalur-style coffee plantation resort: peak season is the
@@ -90,6 +111,41 @@ export const ROOMS: Room[] = [
     seasonMultipliers: PEAK_SEASON,
   },
 ];
+
+export const SPECIAL_SERVICES: SpecialService[] = [
+  {
+    id: "candlelit-dinner",
+    title: "Private Candlelit Dinner",
+    description:
+      "A private, chef-curated dinner for two, served candlelit on the plantation deck.",
+    price: 6500,
+  },
+  {
+    id: "couples-spa",
+    title: "Couples' Spa Session",
+    description:
+      "A side-by-side Ayurvedic spa session for two, using estate-grown botanicals.",
+    price: 8500,
+  },
+  {
+    id: "sunset-plantation-walk",
+    title: "Sunset Plantation Walk",
+    description:
+      "A private guided walk through the coffee plantation at sunset, with an estate coffee tasting.",
+    price: 3000,
+  },
+  {
+    id: "in-room-breakfast",
+    title: "In-Room Breakfast",
+    description:
+      "A curated breakfast spread served privately in-room, featuring estate coffee and seasonal produce.",
+    price: 2200,
+  },
+];
+
+function getSpecialService(id: string): SpecialService | undefined {
+  return SPECIAL_SERVICES.find((s) => s.id === id);
+}
 
 function daysFromNow(days: number): string {
   const d = new Date();
@@ -180,7 +236,17 @@ export type PriceBreakdown =
       nights: number;
       baseTotal: number;
       seasonAdjustment: number;
+      roomTotal: number;
+      specialServices: SpecialServiceLine[];
+      specialServicesTotal: number;
+      // Amount actually due: equals originalTotal unless `comped` is true,
+      // in which case it's 0. Every non-comped caller sees the same number
+      // here as before this field set existed.
       total: number;
+      // What the stay + services would have cost, regardless of comping —
+      // always present so a comped booking can still show "was $X".
+      originalTotal: number;
+      comped: boolean;
     }
   | { error: string };
 
@@ -189,7 +255,10 @@ export function calculatePrice(
   checkIn: string,
   checkOut: string,
   guests: number,
+  options: { specialServiceIds?: string[]; comped?: boolean } = {},
 ): PriceBreakdown {
+  const { specialServiceIds = [], comped = false } = options;
+
   const room = getRoom(roomId);
   if (!room) {
     return { error: `Unknown room id "${roomId}".` };
@@ -233,13 +302,31 @@ export function calculatePrice(
     cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
 
-  const total = Math.round(baseTotal + seasonAdjustment);
+  const roomTotal = Math.round(baseTotal + seasonAdjustment);
+
+  const specialServices: SpecialServiceLine[] = [];
+  let specialServicesTotal = 0;
+  for (const id of specialServiceIds) {
+    const service = getSpecialService(id);
+    if (!service) {
+      return { error: `Unknown special service "${id}".` };
+    }
+    specialServices.push({ id: service.id, title: service.title, price: service.price });
+    specialServicesTotal += service.price;
+  }
+
+  const originalTotal = roomTotal + specialServicesTotal;
 
   return {
     nights,
     baseTotal: Math.round(baseTotal),
     seasonAdjustment: Math.round(seasonAdjustment),
-    total,
+    roomTotal,
+    specialServices,
+    specialServicesTotal,
+    originalTotal,
+    total: comped ? 0 : originalTotal,
+    comped,
   };
 }
 
@@ -263,6 +350,10 @@ export type CreateBookingResult =
         total: number;
         guestName: string;
         guestEmail: string;
+        specialServices: SpecialServiceLine[];
+        specialServicesTotal: number;
+        originalTotal: number;
+        comped: boolean;
       };
     }
   | { error: string };
@@ -291,6 +382,7 @@ export function createBooking(
     input.checkIn,
     input.checkOut,
     input.guests,
+    { specialServiceIds: input.specialServiceIds, comped: input.comped },
   );
   if ("error" in price) {
     return { error: price.error };
@@ -307,6 +399,9 @@ export function createBooking(
     guests: input.guests,
     total: price.total,
     createdAt: new Date().toISOString(),
+    specialServices: price.specialServices,
+    comped: price.comped,
+    originalTotal: price.originalTotal,
   };
 
   BOOKINGS.push(booking);
@@ -328,6 +423,10 @@ export function createBooking(
       total: price.total,
       guestName: input.guestName,
       guestEmail: input.guestEmail,
+      specialServices: price.specialServices,
+      specialServicesTotal: price.specialServicesTotal,
+      originalTotal: price.originalTotal,
+      comped: price.comped,
     },
   };
 }

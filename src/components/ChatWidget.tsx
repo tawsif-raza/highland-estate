@@ -5,6 +5,12 @@ import Image from "next/image";
 import { AnimatePresence, motion } from "framer-motion";
 import { ROOMS } from "@/lib/booking-data";
 
+type SpecialServiceLine = {
+  id: string;
+  title: string;
+  price: number;
+};
+
 type BookingConfirmation = {
   bookingId: string;
   roomTitle: string;
@@ -15,6 +21,10 @@ type BookingConfirmation = {
   total: number;
   guestName: string;
   guestEmail: string;
+  specialServices: SpecialServiceLine[];
+  specialServicesTotal: number;
+  originalTotal: number;
+  comped: boolean;
 };
 
 type Message = {
@@ -40,16 +50,58 @@ function formatDate(value: string): string {
   });
 }
 
+function SparkleIcon({
+  className,
+  animated,
+}: {
+  className?: string;
+  animated?: boolean;
+}) {
+  const path = (
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M10 2.5l1.2 3.6 3.6 1.2-3.6 1.2-1.2 3.6-1.2-3.6-3.6-1.2 3.6-1.2L10 2.5z"
+    />
+  );
+
+  if (!animated) {
+    return (
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+        {path}
+      </svg>
+    );
+  }
+
+  return (
+    <motion.svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      className={className}
+      initial={{ opacity: 0, scale: 0.6 }}
+      animate={{ opacity: [0.55, 1, 0.55], scale: [0.9, 1.08, 0.9] }}
+      transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut", delay: 0.4 }}
+    >
+      {path}
+    </motion.svg>
+  );
+}
+
 function BookingConfirmationCard({
   confirmation,
 }: {
   confirmation: BookingConfirmation;
 }) {
   const image = roomImageForTitle(confirmation.roomTitle);
-  const perNight = Math.round(confirmation.total / confirmation.nights);
+  // originalTotal equals total for any non-comped booking, so this is the
+  // same number as before for every guest except a comped VIP one.
+  const perNight = Math.round(confirmation.originalTotal / confirmation.nights);
+  const isVip = confirmation.comped;
 
-  return (
-    <div className="w-full max-w-[260px] overflow-hidden rounded-2xl border border-[#4A3320]/10 bg-white shadow-sm">
+  const content = (
+    <>
       {image && (
         <div className="relative aspect-[16/9] w-full overflow-hidden">
           <Image
@@ -67,6 +119,15 @@ function BookingConfirmationCard({
       )}
 
       <div className="space-y-2.5 p-4">
+        {isVip && (
+          <div className="flex items-center gap-1.5">
+            <SparkleIcon animated className="h-4 w-4 flex-none text-secondary" />
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-secondary">
+              Honored Guest
+            </span>
+          </div>
+        )}
+
         {!image && (
           <p className="font-lora text-base text-[#1c2a22]">
             {confirmation.roomTitle}
@@ -83,21 +144,76 @@ function BookingConfirmationCard({
           </span>
         </div>
 
+        {confirmation.specialServices.length > 0 && (
+          <div className="space-y-1 border-t border-[#4A3320]/10 pt-2.5 text-xs text-[#1c2a22]/60">
+            {confirmation.specialServices.map((service) => (
+              <div key={service.id} className="flex items-center justify-between gap-2">
+                <span>{service.title}</span>
+                {isVip ? (
+                  <span className="flex flex-none items-center gap-1.5">
+                    <span className="text-[#1c2a22]/30 line-through">
+                      ${service.price.toLocaleString()}
+                    </span>
+                    <span className="text-secondary">Complimentary</span>
+                  </span>
+                ) : (
+                  <span className="flex-none">${service.price.toLocaleString()}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="flex items-center justify-between border-t border-[#4A3320]/10 pt-2.5 text-xs text-[#1c2a22]/60">
           <span>
             {confirmation.nights} night{confirmation.nights === 1 ? "" : "s"} &middot; $
             {perNight.toLocaleString()}/night
           </span>
-          <span className="text-sm font-medium text-[#1c2a22]">
-            ${confirmation.total.toLocaleString()}
-          </span>
+          {isVip ? (
+            <span className="flex items-center gap-1.5">
+              <span className="text-[#1c2a22]/30 line-through">
+                ${confirmation.originalTotal.toLocaleString()}
+              </span>
+              <span className="text-sm font-medium text-secondary">Complimentary</span>
+            </span>
+          ) : (
+            <span className="text-sm font-medium text-[#1c2a22]">
+              ${confirmation.total.toLocaleString()}
+            </span>
+          )}
         </div>
 
-        <div className="rounded-lg bg-secondary/5 px-3 py-2 text-[11px] tracking-wide text-secondary">
-          Confirmation #{confirmation.bookingId.slice(0, 8).toUpperCase()}
+        <div className="flex items-center justify-between rounded-lg bg-secondary/5 px-3 py-2 text-[11px] tracking-wide text-secondary">
+          <span>
+            Confirmation #{confirmation.bookingId.slice(0, 8).toUpperCase()}
+          </span>
+          {isVip && <SparkleIcon animated className="h-4 w-4 flex-none text-secondary" />}
         </div>
       </div>
-    </div>
+    </>
+  );
+
+  if (!isVip) {
+    return (
+      <div className="w-full max-w-[260px] overflow-hidden rounded-2xl border border-[#4A3320]/10 bg-white shadow-sm">
+        {content}
+      </div>
+    );
+  }
+
+  // VIP cards get a soft gradient border (secondary → accent → secondary,
+  // both existing site tokens — no new colors) plus a faint secondary-toned
+  // glow, and a distinct scale+fade entrance so the moment reads as
+  // different from a standard booking confirmation, not just re-colored.
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9, y: 10 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+      className="w-full max-w-[260px] rounded-2xl bg-gradient-to-br from-secondary/70 via-accent/70 to-secondary/70 p-[1.5px] shadow-[0_6px_28px_-8px_rgba(41,68,53,0.45)]"
+    >
+      <div className="overflow-hidden rounded-[15px] bg-white">{content}</div>
+    </motion.div>
   );
 }
 
