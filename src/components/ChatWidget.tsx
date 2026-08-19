@@ -33,6 +33,7 @@ type Message = {
   text: string;
   bookingConfirmation?: BookingConfirmation;
   bookingError?: string;
+  isError?: boolean;
 };
 
 function roomImageForTitle(roomTitle: string): string | undefined {
@@ -48,6 +49,72 @@ function formatDate(value: string): string {
     year: "numeric",
     timeZone: "UTC",
   });
+}
+
+const STORAGE_KEY = "highland-estate-chat";
+
+const SUGGESTION_CHIPS = [
+  { label: "🏡 View rooms", prompt: "What rooms do you have available?" },
+  { label: "📅 Check availability", prompt: "I'd like to check availability for a stay." },
+  { label: "☕ Plantation tours", prompt: "Tell me about the coffee plantation experiences." },
+];
+
+// Renders the limited markdown the system prompt actually asks the model to
+// produce — "- " bullet lists and **bold** — as real HTML instead of raw
+// dashes/asterisks. Not a general markdown parser; deliberately scoped to
+// what the concierge's replies use.
+function renderInline(text: string, keyPrefix: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
+  return parts.map((part, i) =>
+    part.startsWith("**") && part.endsWith("**") ? (
+      <strong key={`${keyPrefix}-${i}`} className="font-semibold">
+        {part.slice(2, -2)}
+      </strong>
+    ) : (
+      <span key={`${keyPrefix}-${i}`}>{part}</span>
+    ),
+  );
+}
+
+function FormattedMessage({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const blocks: { type: "list" | "text"; lines: string[] }[] = [];
+
+  for (const line of lines) {
+    const isBullet = /^\s*[-*]\s+/.test(line);
+    const lastBlock = blocks[blocks.length - 1];
+    const type = isBullet ? "list" : "text";
+    const content = isBullet ? line.replace(/^\s*[-*]\s+/, "") : line;
+
+    if (lastBlock && lastBlock.type === type) {
+      lastBlock.lines.push(content);
+    } else {
+      blocks.push({ type, lines: [content] });
+    }
+  }
+
+  return (
+    <>
+      {blocks.map((block, i) =>
+        block.type === "list" ? (
+          <ul key={i} className="list-disc space-y-1 pl-4">
+            {block.lines.map((line, j) => (
+              <li key={j}>{renderInline(line, `${i}-${j}`)}</li>
+            ))}
+          </ul>
+        ) : (
+          <p key={i} className={i > 0 ? "mt-1.5" : undefined}>
+            {block.lines.map((line, j) => (
+              <span key={j}>
+                {j > 0 && <br />}
+                {renderInline(line, `${i}-${j}`)}
+              </span>
+            ))}
+          </p>
+        ),
+      )}
+    </>
+  );
 }
 
 function SparkleIcon({
@@ -239,22 +306,40 @@ function BookingUnavailableNote({ message }: { message: string }) {
   );
 }
 
+function loadStoredMessages(): Message[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    return saved ? (JSON.parse(saved) as Message[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 export default function ChatWidget() {
   const [isOpen, setIsOpen] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(loadStoredMessages);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Monotonic counter for message ids — avoids calling an impure function
+  // like Date.now() from within the component.
+  const nextIdRef = useRef(0);
+  const nextId = () => ++nextIdRef.current;
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+  }, [messages]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
-  const handleSend = async () => {
-    const text = input.trim();
+  const handleSend = async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim();
     if (!text) return;
 
-    const userMessage: Message = { id: Date.now(), sender: "user", text };
+    const userMessage: Message = { id: nextId(), sender: "user", text };
     const updatedMessages = [...messages, userMessage];
 
     setMessages(updatedMessages);
@@ -272,11 +357,21 @@ export default function ChatWidget() {
       setMessages((prev) => [
         ...prev,
         {
-          id: Date.now() + 1,
+          id: nextId(),
           sender: "bot",
           text: data.reply ?? "",
           bookingConfirmation: data.bookingConfirmation,
           bookingError: data.bookingError,
+        },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId(),
+          sender: "bot",
+          text: "Something went wrong sending that. Please check your connection and try again.",
+          isError: true,
         },
       ]);
     } finally {
@@ -311,9 +406,23 @@ export default function ChatWidget() {
 
             <div className="flex-1 space-y-3 overflow-y-auto p-4">
               {messages.length === 0 && (
-                <p className="text-center text-sm text-[#4A3320]/50">
-                  Ask us anything about your stay.
-                </p>
+                <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
+                  <p className="text-sm text-[#4A3320]/50">
+                    Ask us anything about your stay.
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {SUGGESTION_CHIPS.map((chip) => (
+                      <button
+                        key={chip.label}
+                        type="button"
+                        onClick={() => handleSend(chip.prompt)}
+                        className="rounded-full border border-[#4A3320]/20 bg-white px-3 py-1.5 text-xs text-[#1c2a22] shadow-sm transition-colors hover:bg-[#4A3320]/5"
+                      >
+                        {chip.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
 
               {messages.map((message) => (
@@ -328,10 +437,16 @@ export default function ChatWidget() {
                       className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm leading-relaxed ${
                         message.sender === "user"
                           ? "bg-secondary text-white"
-                          : "bg-white text-[#1c2a22] shadow-sm"
+                          : message.isError
+                            ? "border border-red-200 bg-red-50 text-red-700"
+                            : "bg-white text-[#1c2a22] shadow-sm"
                       }`}
                     >
-                      {message.text}
+                      {message.sender === "bot" ? (
+                        <FormattedMessage text={message.text} />
+                      ) : (
+                        message.text
+                      )}
                     </div>
                   )}
 
