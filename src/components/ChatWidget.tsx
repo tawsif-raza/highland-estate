@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -322,9 +323,7 @@ export default function ChatWidget() {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  // Monotonic counter for message ids — avoids calling an impure function
-  // like Date.now() from within the component.
-  const nextIdRef = useRef(0);
+  const nextIdRef = useRef(messages.length > 0 ? Math.max(...messages.map((m) => m.id)) : 0);
   const nextId = () => ++nextIdRef.current;
 
   useEffect(() => {

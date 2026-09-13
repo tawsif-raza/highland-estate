@@ -37,7 +37,7 @@ If the user asks a question unrelated to The Highland Estate, its features, or r
 
 For any off-topic or irrelevant questions, reply strictly with: 'I am here to assist you only with details about The Highland Estate. Please feel free to ask me about our rooms, amenities, or plantation experiences!'
 
-Keep your replies polite, warm, and concise.
+Keep your replies polite, warm, and extremely concise (maximum 2-3 sentences). Do not use unnecessary filler words.
 
 When a guest wants to check room availability, get pricing, or make a booking, use the provided tools. Room ids are exactly: mist-cabin (The Mist Cabin), canopy-suite (The Canopy Suite), plantation-villa (The Plantation Villa). Always confirm availability and price with the guest before calling create_booking. Dates must be in YYYY-MM-DD format.
 
@@ -368,10 +368,11 @@ async function callGroqOnce(groqMessages: unknown[]) {
       Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "openai/gpt-oss-120b",
+      model: "llama-3.3-70b-versatile",
       messages: groqMessages,
       tools: TOOL_DECLARATIONS.map((tool) => ({ type: "function", function: tool })),
       tool_choice: "auto",
+      max_tokens: 150,
     }),
   });
 
@@ -421,8 +422,60 @@ async function callGroq(groqMessages: unknown[]) {
 }
 
 // ---------------------------------------------------------------------------
-// Gemini — the fallback provider, used only once Groq's daily quota is
-// confirmed exhausted for this request (see useGemini in POST).
+// Kimi (Moonshot AI) — fallback 1
+// ---------------------------------------------------------------------------
+
+async function callKimiOnce(kimiMessages: unknown[]) {
+  const response = await fetch("https://api.moonshot.cn/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.KIMI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "moonshot-v1-8k",
+      messages: kimiMessages,
+      tools: TOOL_DECLARATIONS.map((tool) => ({ type: "function", function: tool })),
+      tool_choice: "auto",
+      max_tokens: 150,
+    }),
+  });
+
+  if (response.ok) {
+    return { ok: true as const, data: await response.json() };
+  }
+
+  const errorText = await response.text();
+  console.error("Kimi API error:", response.status, errorText);
+
+  let code: string | undefined;
+  try {
+    code = JSON.parse(errorText)?.error?.code;
+  } catch {
+  }
+
+  return { ok: false as const, code };
+}
+
+async function callKimi(kimiMessages: unknown[]) {
+  let lastResult: Awaited<ReturnType<typeof callKimiOnce>> | null = null;
+
+  for (let attempt = 0; attempt <= MAX_TOOL_CALL_RETRIES; attempt++) {
+    const result = await callKimiOnce(kimiMessages);
+    if (result.ok) {
+      return result;
+    }
+    lastResult = result;
+    if (result.code !== "tool_use_failed" || attempt === MAX_TOOL_CALL_RETRIES) {
+      return result;
+    }
+  }
+
+  return lastResult as { ok: false; code: string | undefined };
+}
+
+// ---------------------------------------------------------------------------
+// Gemini — primary provider
 // ---------------------------------------------------------------------------
 
 const GEMINI_MODEL = "gemini-2.5-flash";
@@ -439,6 +492,9 @@ async function callGeminiOnce(systemPrompt: string, contents: unknown[]) {
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents,
       tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+      generationConfig: {
+        maxOutputTokens: 150,
+      },
     }),
   });
 
@@ -508,12 +564,10 @@ export async function POST(request: Request) {
   // round cap trips before the model gets to talk about it.
   let bookingOutcome: CreateBookingResult | null = null;
 
-  // Groq has priority. Once a round hits Groq's rate limit, this flips to
-  // true and stays true for the rest of THIS request — Groq's daily quota
-  // won't recover mid-turn, so there's no point re-checking it every round.
-  // The next separate request (the guest's next message) starts fresh and
-  // tries Groq first again, exactly like this one did.
-  let useGemini = false;
+  // Priority chain: gemini -> kimi -> groq
+  // If one fails with a rate limit or resource exhaustion, we fall back to the next.
+  type Provider = "gemini" | "kimi" | "groq";
+  let activeProvider: Provider = "gemini";
 
   // Budget for tool-call rounds within this one turn. A booking turn can
   // legitimately need several in sequence (check_availability ->
@@ -523,27 +577,37 @@ export async function POST(request: Request) {
   for (let i = 0; i < 10; i++) {
     let parsed: ParsedTurn;
 
-    if (!useGemini) {
-      const groqResult = await callGroq(toGroqMessages(systemPrompt, turns));
-
-      if (groqResult.ok) {
-        const choice = groqResult.data.choices?.[0];
+    if (activeProvider === "gemini") {
+      const geminiResult = await callGemini(systemPrompt, toGeminiContents(turns));
+      if (geminiResult.ok) {
+        const parts = geminiResult.data.candidates?.[0]?.content?.parts ?? [];
+        parsed = parseGeminiParts(parts);
+      } else if (geminiResult.status === "RESOURCE_EXHAUSTED" || !geminiResult.status) {
+        console.warn("Gemini limit hit or failed — falling back to Kimi for the rest of this turn.");
+        activeProvider = "kimi";
+        continue;
+      } else {
+        return NextResponse.json({ reply: GENERIC_FAILURE_REPLY }, { status: 502 });
+      }
+    } else if (activeProvider === "kimi") {
+      const kimiResult = await callKimi(toGroqMessages(systemPrompt, turns));
+      if (kimiResult.ok) {
+        const choice = kimiResult.data.choices?.[0];
         parsed = parseGroqChoice(choice ?? {});
-      } else if (groqResult.code === "rate_limit_exceeded") {
-        console.warn("Groq rate limit hit — falling back to Gemini for the rest of this turn.");
-        useGemini = true;
-        continue; // retry this same round immediately, now via Gemini
+      } else if (kimiResult.code === "rate_limit_exceeded" || !kimiResult.code) {
+        console.warn("Kimi limit hit or failed — falling back to Groq for the rest of this turn.");
+        activeProvider = "groq";
+        continue;
       } else {
         return NextResponse.json({ reply: GENERIC_FAILURE_REPLY }, { status: 502 });
       }
     } else {
-      const geminiResult = await callGemini(systemPrompt, toGeminiContents(turns));
-
-      if (geminiResult.ok) {
-        const parts = geminiResult.data.candidates?.[0]?.content?.parts ?? [];
-        parsed = parseGeminiParts(parts);
-      } else if (geminiResult.status === "RESOURCE_EXHAUSTED") {
-        // Both providers are tapped out — nothing left to fall back to.
+      const groqResult = await callGroq(toGroqMessages(systemPrompt, turns));
+      if (groqResult.ok) {
+        const choice = groqResult.data.choices?.[0];
+        parsed = parseGroqChoice(choice ?? {});
+      } else if (groqResult.code === "rate_limit_exceeded") {
+        // All providers exhausted
         return NextResponse.json({ reply: RATE_LIMIT_REPLY }, { status: 503 });
       } else {
         return NextResponse.json({ reply: GENERIC_FAILURE_REPLY }, { status: 502 });
