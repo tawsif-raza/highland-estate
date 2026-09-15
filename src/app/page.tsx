@@ -1,7 +1,9 @@
 import Navbar from "@/components/Navbar";
 import Hero from "@/components/Hero";
 import RoomsSection from "@/components/RoomsSection";
+import VirtualTourSection from "@/components/VirtualTourSection";
 import AmenitiesSection from "@/components/AmenitiesSection";
+import WeatherSection from "@/components/WeatherSection";
 import GallerySection from "@/components/GallerySection";
 import TestimonialsSection from "@/components/TestimonialsSection";
 import FAQSection from "@/components/FAQSection";
@@ -14,7 +16,9 @@ export default function Home() {
       <Navbar />
       <Hero />
       <RoomsSection />
+      <VirtualTourSection />
       <AmenitiesSection />
+      <WeatherSection />
       <GallerySection />
       <TestimonialsSection />
       <FAQSection />
