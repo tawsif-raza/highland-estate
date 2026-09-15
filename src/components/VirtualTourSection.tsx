@@ -4,59 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import PanoramaViewer from "./PanoramaViewer";
 
-/* ------------------------------------------------------------------ */
-/*  Tour data                                                         */
-/* ------------------------------------------------------------------ */
-
-interface TourSpot {
-  id: string;
-  title: string;
-  subtitle: string;
-  thumbnail: string;
-  panorama: string;
-  badge?: string;
-}
-
-const TOUR_SPOTS: TourSpot[] = [
-  {
-    id: "mist-cabin",
-    title: "The Mist Cabin",
-    subtitle: "450 sq ft · Forest View · King Bed",
-    thumbnail: "/images/room-mist-cabin.png",
-    panorama: "/images/panoramas/mist-cabin.jpg",
-    badge: "Popular",
-  },
-  {
-    id: "canopy-suite",
-    title: "The Canopy Suite",
-    subtitle: "700 sq ft · Valley View · Jacuzzi",
-    thumbnail: "/images/room-canopy.png",
-    panorama: "/images/panoramas/canopy-suite.jpg",
-    badge: "Premium",
-  },
-  {
-    id: "plantation-villa",
-    title: "The Plantation Villa",
-    subtitle: "1,200 sq ft · Private Estate · 2 Beds",
-    thumbnail: "/images/room-villa.png",
-    panorama: "/images/panoramas/plantation-villa.jpg",
-    badge: "Signature",
-  },
-  {
-    id: "infinity-pool",
-    title: "Infinity Pool",
-    subtitle: "Heated Valley Pool · Panoramic Views",
-    thumbnail: "/images/pool-infinity.png",
-    panorama: "/images/panoramas/infinity-pool.jpg",
-  },
-  {
-    id: "reception",
-    title: "The Grand Reception",
-    subtitle: "Estate Lobby · Coffee Lounge",
-    thumbnail: "/images/reception.png",
-    panorama: "/images/panoramas/reception.jpg",
-  },
-];
+import { TOUR_SPOTS, type PanoramaAsset } from "@/lib/panorama-data";
 
 /* ------------------------------------------------------------------ */
 /*  Fade-in on scroll                                                 */
@@ -110,11 +58,11 @@ function FadeIn({
 function TourCard({
   spot,
   onLaunch,
-  delay,
+  delay = 0,
 }: {
-  spot: TourSpot;
+  spot: PanoramaAsset;
   onLaunch: () => void;
-  delay: number;
+  delay?: number;
 }) {
   return (
     <FadeIn delay={delay}>
@@ -185,7 +133,7 @@ function TourCard({
 /* ------------------------------------------------------------------ */
 
 export default function VirtualTourSection() {
-  const [activeSpot, setActiveSpot] = useState<TourSpot | null>(null);
+  const [activeSpot, setActiveSpot] = useState<PanoramaAsset | null>(null);
 
   return (
     <>
@@ -247,6 +195,7 @@ export default function VirtualTourSection() {
       <PanoramaViewer
         key={activeSpot?.id ?? "closed"}
         src={activeSpot?.panorama ?? ""}
+        previewSrc={activeSpot?.preview}
         title={activeSpot?.title ?? ""}
         isOpen={activeSpot !== null}
         onClose={() => setActiveSpot(null)}

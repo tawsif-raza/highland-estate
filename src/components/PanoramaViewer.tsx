@@ -4,7 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 interface PanoramaViewerProps {
+  /** Primary equirectangular panorama source URL (4096×2048 or 8192×4096) */
   src: string;
+  /** Optional low-resolution preview source URL (1024×512) for instant progressive loading */
+  previewSrc?: string;
   title: string;
   isOpen: boolean;
   onClose: () => void;
@@ -106,11 +109,97 @@ function createProgram(
 }
 
 /* ------------------------------------------------------------------ */
+/*  Texture Upload Helper with GPU Max Texture Size Guard             */
+/* ------------------------------------------------------------------ */
+
+function uploadTextureImage(
+  gl: WebGLRenderingContext | WebGL2RenderingContext,
+  tex: WebGLTexture,
+  img: HTMLImageElement,
+  isWebGL2: boolean,
+) {
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+
+  // Check GPU hardware maximum texture dimension limit
+  const maxTexSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096;
+  let sourceImage: TexImageSource = img;
+
+  if (img.width > maxTexSize || img.height > maxTexSize) {
+    const scale = Math.min(maxTexSize / img.width, maxTexSize / img.height);
+    const targetW = Math.max(1, Math.round(img.width * scale));
+    const targetH = Math.max(1, Math.round(img.height * scale));
+
+    const offscreen = document.createElement("canvas");
+    offscreen.width = targetW;
+    offscreen.height = targetH;
+    const ctx = offscreen.getContext("2d");
+    if (ctx) {
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+      sourceImage = offscreen;
+    }
+  }
+
+  // Safe clamp-to-edge wrap modes (fragment shader handles continuous 360 wrap)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+  const imgW = "width" in sourceImage ? sourceImage.width : img.width;
+  const imgH = "height" in sourceImage ? sourceImage.height : img.height;
+  const isPot = (imgW & (imgW - 1)) === 0 && (imgH & (imgH - 1)) === 0;
+
+  if (isWebGL2 || isPot) {
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      sourceImage,
+    );
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(
+      gl.TEXTURE_2D,
+      gl.TEXTURE_MIN_FILTER,
+      gl.LINEAR_MIPMAP_LINEAR,
+    );
+  } else {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      sourceImage,
+    );
+  }
+
+  // Check and apply Anisotropic Filtering where supported
+  const ext =
+    gl.getExtension("EXT_texture_filter_anisotropic") ||
+    gl.getExtension("WEBKIT_EXT_texture_filter_anisotropic") ||
+    gl.getExtension("MOZ_EXT_texture_filter_anisotropic");
+
+  if (ext) {
+    const maxAniso = gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
+    if (maxAniso && maxAniso > 1) {
+      gl.texParameterf(
+        gl.TEXTURE_2D,
+        ext.TEXTURE_MAX_ANISOTROPY_EXT,
+        Math.min(maxAniso, 8),
+      );
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Component                                                         */
 /* ------------------------------------------------------------------ */
 
 export default function PanoramaViewer({
   src,
+  previewSrc,
   title,
   isOpen,
   onClose,
@@ -130,8 +219,9 @@ export default function PanoramaViewer({
   // React state for UI transitions and loading feedback
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
+  const [highResLoaded, setHighResLoaded] = useState(false);
 
-  /* ---- Main WebGL rendering lifecycle ---- */
+  /* ---- Main WebGL rendering & progressive loading lifecycle ---- */
   useEffect(() => {
     if (!isOpen || !src) return;
 
@@ -143,6 +233,7 @@ export default function PanoramaViewer({
     let glTexture: WebGLTexture | null = null;
     let glBuffer: WebGLBuffer | null = null;
     let glProg: WebGLProgram | null = null;
+    let isHighResActive = false;
 
     // Prefer WebGL 2, fallback to WebGL 1
     const gl = (canvas.getContext("webgl2", {
@@ -161,11 +252,22 @@ export default function PanoramaViewer({
       | null;
 
     if (!gl) {
-      console.warn("WebGL not supported, falling back to 2D canvas");
+      console.warn("WebGL not supported on this device.");
+      setError(true);
+      return;
     }
 
-    const prog = gl ? createProgram(gl, VERTEX_SHADER_SRC, FRAGMENT_SHADER_SRC) : null;
+    const isWebGL2 =
+      typeof WebGL2RenderingContext !== "undefined" &&
+      gl instanceof WebGL2RenderingContext;
+
+    const prog = createProgram(gl, VERTEX_SHADER_SRC, FRAGMENT_SHADER_SRC);
     glProg = prog;
+
+    if (!prog) {
+      setError(true);
+      return;
+    }
 
     // DevicePixelRatio resize helper (scaled to native display pixels, capped at 2x)
     const updateSize = () => {
@@ -179,147 +281,103 @@ export default function PanoramaViewer({
         canvas.width = w;
         canvas.height = h;
       }
-      if (gl) {
-        gl.viewport(0, 0, canvas.width, canvas.height);
-      }
+      gl.viewport(0, 0, canvas.width, canvas.height);
     };
 
     updateSize();
     window.addEventListener("resize", updateSize);
 
-    // Load panorama image
-    const img = new Image();
+    // Prepare WebGL full-screen quad (-1 to 1)
+    gl.useProgram(prog);
+    const buf = gl.createBuffer();
+    glBuffer = buf;
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]),
+      gl.STATIC_DRAW,
+    );
 
-    img.onload = () => {
+    const aPos = gl.getAttribLocation(prog, "aPosition");
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+    // Create GPU Texture container
+    const tex = gl.createTexture();
+    glTexture = tex;
+
+    const uTex = gl.getUniformLocation(prog, "uTexture");
+    const uYaw = gl.getUniformLocation(prog, "uYaw");
+    const uPitch = gl.getUniformLocation(prog, "uPitch");
+    const uFov = gl.getUniformLocation(prog, "uFov");
+    const uAspect = gl.getUniformLocation(prog, "uAspect");
+
+    gl.uniform1i(uTex, 0);
+
+    // Start 60 FPS Render loop
+    const startRenderLoop = () => {
+      if (animId) return;
+
+      const loop = () => {
+        if (cancelled) return;
+
+        // Gentle auto-rotation when user is not actively dragging
+        if (autoRotateRef.current && !draggingRef.current) {
+          yawRef.current += 0.0015; // smooth drift (~5° per second)
+        }
+
+        const w = canvas.width;
+        const h = canvas.height;
+        gl.viewport(0, 0, w, h);
+
+        gl.uniform1f(uYaw, yawRef.current);
+        gl.uniform1f(uPitch, pitchRef.current);
+        gl.uniform1f(uFov, (fovRef.current * Math.PI) / 180);
+        gl.uniform1f(uAspect, w / h);
+
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+        animId = requestAnimationFrame(loop);
+        animRef.current = animId;
+      };
+
+      loop();
+    };
+
+    /* ---- Progressive Loading Strategy ---- */
+    // Step 1: If previewSrc is present, load it fast for instant interactivity
+    if (previewSrc && previewSrc !== src) {
+      const previewImg = new Image();
+      previewImg.onload = () => {
+        if (cancelled || isHighResActive || !tex) return;
+        uploadTextureImage(gl, tex, previewImg, isWebGL2);
+        startRenderLoop();
+        setLoaded(true);
+      };
+      // If preview fails, the main high-res image will still load below
+      previewImg.src = previewSrc;
+    }
+
+    // Step 2: Fetch the high-resolution master asset
+    const highResImg = new Image();
+    highResImg.onload = () => {
+      if (cancelled || !tex) return;
+      isHighResActive = true;
+      uploadTextureImage(gl, tex, highResImg, isWebGL2);
+      startRenderLoop();
+      setLoaded(true);
+      setHighResLoaded(true);
+    };
+
+    highResImg.onerror = () => {
       if (cancelled) return;
-
-      if (gl && prog) {
-        gl.useProgram(prog);
-
-        // Setup full-screen quad (-1 to 1)
-        const buf = gl.createBuffer();
-        glBuffer = buf;
-        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-        gl.bufferData(
-          gl.ARRAY_BUFFER,
-          new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]),
-          gl.STATIC_DRAW,
-        );
-
-        const aPos = gl.getAttribLocation(prog, "aPosition");
-        gl.enableVertexAttribArray(aPos);
-        gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-        // Upload and configure texture
-        const tex = gl.createTexture();
-        glTexture = tex;
-        gl.bindTexture(gl.TEXTURE_2D, tex);
-
-        // Clamp to edge is universally safe for both POT and NPOT textures in WebGL 1 and 2
-        // Spherical wrapping is handled cleanly in the fragment shader with fract()
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-        // Bilinear texture filtering for crisp, smooth scaling
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-
-        // Check if texture is Power of Two
-        const isPot =
-          (img.width & (img.width - 1)) === 0 && (img.height & (img.height - 1)) === 0;
-        const isWebGL2 =
-          typeof WebGL2RenderingContext !== "undefined" &&
-          gl instanceof WebGL2RenderingContext;
-
-        if (isWebGL2 || isPot) {
-          gl.texImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            img,
-          );
-          gl.generateMipmap(gl.TEXTURE_2D);
-          gl.texParameteri(
-            gl.TEXTURE_2D,
-            gl.TEXTURE_MIN_FILTER,
-            gl.LINEAR_MIPMAP_LINEAR,
-          );
-        } else {
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-          gl.texImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            img,
-          );
-        }
-
-        // Check and enable Anisotropic Filtering where supported
-        const ext =
-          gl.getExtension("EXT_texture_filter_anisotropic") ||
-          gl.getExtension("WEBKIT_EXT_texture_filter_anisotropic") ||
-          gl.getExtension("MOZ_EXT_texture_filter_anisotropic");
-
-        if (ext) {
-          const maxAniso = gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
-          if (maxAniso && maxAniso > 1) {
-            gl.texParameterf(
-              gl.TEXTURE_2D,
-              ext.TEXTURE_MAX_ANISOTROPY_EXT,
-              Math.min(maxAniso, 8),
-            );
-          }
-        }
-
-        // Get uniform locations
-        const uTex = gl.getUniformLocation(prog, "uTexture");
-        const uYaw = gl.getUniformLocation(prog, "uYaw");
-        const uPitch = gl.getUniformLocation(prog, "uPitch");
-        const uFov = gl.getUniformLocation(prog, "uFov");
-        const uAspect = gl.getUniformLocation(prog, "uAspect");
-
-        gl.uniform1i(uTex, 0);
-
-        // 60 FPS Render loop
-        const loop = () => {
-          if (cancelled) return;
-
-          // Gentle auto-rotation when user is not interacting
-          if (autoRotateRef.current && !draggingRef.current) {
-            yawRef.current += 0.0015; // smooth drift (~5° per second)
-          }
-
-          const w = canvas.width;
-          const h = canvas.height;
-          gl.viewport(0, 0, w, h);
-
-          gl.uniform1f(uYaw, yawRef.current);
-          gl.uniform1f(uPitch, pitchRef.current);
-          gl.uniform1f(uFov, (fovRef.current * Math.PI) / 180);
-          gl.uniform1f(uAspect, w / h);
-
-          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-          animId = requestAnimationFrame(loop);
-          animRef.current = animId;
-        };
-
-        loop();
-        setLoaded(true);
-      } else {
-        // Fallback for systems without WebGL
-        setLoaded(true);
+      // If high-res fails and preview didn't load either, report error
+      if (!isHighResActive && !animId) {
+        setError(true);
       }
     };
 
-    img.onerror = () => {
-      if (!cancelled) setError(true);
-    };
-
-    img.src = src;
+    highResImg.src = src;
 
     return () => {
       cancelled = true;
@@ -332,7 +390,7 @@ export default function PanoramaViewer({
         if (glProg) gl.deleteProgram(glProg);
       }
     };
-  }, [isOpen, src]);
+  }, [isOpen, src, previewSrc]);
 
   /* ---- Escape key listener ---- */
   useEffect(() => {
@@ -399,6 +457,11 @@ export default function PanoramaViewer({
               <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-xs text-white/60">
                 360°
               </span>
+              {loaded && highResLoaded && (
+                <span className="hidden rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-medium text-emerald-300 sm:inline">
+                  HD
+                </span>
+              )}
             </div>
             <button
               type="button"
