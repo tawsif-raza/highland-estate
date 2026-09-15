@@ -137,14 +137,6 @@ export default function RoomsSection() {
             >
               Inquire About This Room
             </Link>
-
-            <Link
-              href="#virtual-tours"
-              onClick={() => setSelectedRoom(null)}
-              className="mt-3 block w-full rounded-full border border-white/20 py-3 text-center text-sm font-medium text-[#E8EDEB]/80 transition-colors hover:border-white/40 hover:text-[#E8EDEB]"
-            >
-              🔭 View in 360°
-            </Link>
           </div>
         </div>
       )}

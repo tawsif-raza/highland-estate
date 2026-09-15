@@ -1,7 +1,6 @@
 import Navbar from "@/components/Navbar";
 import Hero from "@/components/Hero";
 import RoomsSection from "@/components/RoomsSection";
-import VirtualTourSection from "@/components/VirtualTourSection";
 import AmenitiesSection from "@/components/AmenitiesSection";
 import WeatherSection from "@/components/WeatherSection";
 import GallerySection from "@/components/GallerySection";
@@ -16,7 +15,6 @@ export default function Home() {
       <Navbar />
       <Hero />
       <RoomsSection />
-      <VirtualTourSection />
       <AmenitiesSection />
       <WeatherSection />
       <GallerySection />
