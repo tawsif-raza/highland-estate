@@ -38,7 +38,6 @@ const FRAGMENT_SHADER_SRC = `
   uniform float uPitch;
   uniform float uFov;
   uniform float uAspect;
-  uniform vec2 uTexelSize;
   varying vec2 vUV;
 
   const float PI = 3.14159265358979323846;
@@ -66,26 +65,7 @@ const FRAGMENT_SHADER_SRC = `
     float u = fract(theta / (2.0 * PI) + 0.5);
     float v = clamp(0.5 - phi / PI, 0.001, 0.999);
 
-    // Center sample
-    vec4 center = texture2D(uTexture, vec2(u, v));
-
-    // Edge-preserving contrast-adaptive sharpening (CAS)
-    // Counteracts bilinear interpolation softening by sampling cross neighbors
-    vec4 up    = texture2D(uTexture, vec2(u, clamp(v - uTexelSize.y, 0.001, 0.999)));
-    vec4 down  = texture2D(uTexture, vec2(u, clamp(v + uTexelSize.y, 0.001, 0.999)));
-    vec4 left  = texture2D(uTexture, vec2(fract(u - uTexelSize.x), v));
-    vec4 right = texture2D(uTexture, vec2(fract(u + uTexelSize.x), v));
-
-    vec3 minCol = min(center.rgb, min(min(up.rgb, down.rgb), min(left.rgb, right.rgb)));
-    vec3 maxCol = max(center.rgb, max(max(up.rgb, down.rgb), max(left.rgb, right.rgb)));
-
-    vec3 neighborAvg = (up.rgb + down.rgb + left.rgb + right.rgb) * 0.25;
-    vec3 sharpened = center.rgb + (center.rgb - neighborAvg) * 0.45;
-
-    // Clamped strictly to neighbor range to prevent ringing or halo artifacts
-    vec3 finalColor = clamp(sharpened, minCol, maxCol);
-
-    gl_FragColor = vec4(finalColor, center.a);
+    gl_FragColor = texture2D(uTexture, vec2(u, v));
   }
 `;
 
@@ -137,16 +117,11 @@ function createProgram(
 /*  Texture Upload Helper with GPU Max Texture Size Guard             */
 /* ------------------------------------------------------------------ */
 
-interface UploadResult {
-  width: number;
-  height: number;
-}
-
 function uploadTextureImage(
   gl: WebGLRenderingContext | WebGL2RenderingContext,
   tex: WebGLTexture,
   img: HTMLImageElement,
-): UploadResult {
+) {
   gl.bindTexture(gl.TEXTURE_2D, tex);
 
   // Check GPU hardware maximum texture dimension limit
@@ -172,7 +147,7 @@ function uploadTextureImage(
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-  // Always use gl.LINEAR for minification and magnification to avoid mipmap downsampling blur
+  // Bilinear filtering for minification and magnification
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
 
@@ -201,11 +176,6 @@ function uploadTextureImage(
       );
     }
   }
-
-  const finalW = "width" in sourceImage ? sourceImage.width : img.width;
-  const finalH = "height" in sourceImage ? sourceImage.height : img.height;
-
-  return { width: finalW, height: finalH };
 }
 
 /* ------------------------------------------------------------------ */
@@ -230,7 +200,6 @@ export default function PanoramaViewer({
   const lastXRef = useRef(0);
   const lastYRef = useRef(0);
   const animRef = useRef(0);
-  const texDimRef = useRef<{ w: number; h: number }>({ w: 848, h: 1264 });
 
   // React state for UI transitions and loading feedback
   const [loaded, setLoaded] = useState(false);
@@ -322,7 +291,6 @@ export default function PanoramaViewer({
     const uPitch = gl.getUniformLocation(prog, "uPitch");
     const uFov = gl.getUniformLocation(prog, "uFov");
     const uAspect = gl.getUniformLocation(prog, "uAspect");
-    const uTexelSize = gl.getUniformLocation(prog, "uTexelSize");
 
     gl.uniform1i(uTex, 0);
 
@@ -353,11 +321,6 @@ export default function PanoramaViewer({
         gl.uniform1f(uPitch, pitchRef.current);
         gl.uniform1f(uFov, (fovRef.current * Math.PI) / 180);
         gl.uniform1f(uAspect, canvas.width / canvas.height);
-        gl.uniform2f(
-          uTexelSize,
-          1.0 / Math.max(1, texDimRef.current.w),
-          1.0 / Math.max(1, texDimRef.current.h),
-        );
 
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
@@ -374,8 +337,7 @@ export default function PanoramaViewer({
       const previewImg = new Image();
       previewImg.onload = () => {
         if (cancelled || isHighResActive || !tex) return;
-        const res = uploadTextureImage(gl, tex, previewImg);
-        texDimRef.current = { w: res.width, h: res.height };
+        uploadTextureImage(gl, tex, previewImg);
         startRenderLoop();
         setLoaded(true);
       };
@@ -387,8 +349,7 @@ export default function PanoramaViewer({
     highResImg.onload = () => {
       if (cancelled || !tex) return;
       isHighResActive = true;
-      const res = uploadTextureImage(gl, tex, highResImg);
-      texDimRef.current = { w: res.width, h: res.height };
+      uploadTextureImage(gl, tex, highResImg);
       startRenderLoop();
       setLoaded(true);
       setHighResLoaded(true);
