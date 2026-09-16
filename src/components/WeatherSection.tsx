@@ -8,23 +8,8 @@ import {
   ESTATE_COORDINATES,
   type MonthClimate,
 } from "@/lib/weather-data";
-
-/* ------------------------------------------------------------------ */
-/*  Types                                                             */
-/* ------------------------------------------------------------------ */
-
-interface LiveWeather {
-  temp: number;
-  feelsLike: number;
-  humidity: number;
-  description: string;
-  icon: string;
-  windSpeed: number;
-  visibility: number | null;
-  sunrise: number | null;
-  sunset: number | null;
-  fallback: boolean;
-}
+import { useWeather } from "@/hooks/useWeather";
+import type { NormalizedWeather, WeatherDisplayStatus } from "@/lib/weather-service";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                           */
@@ -113,9 +98,18 @@ function FadeIn({
 /*  Live Weather Card                                                 */
 /* ------------------------------------------------------------------ */
 
-function LiveWeatherCard({ weather }: { weather: LiveWeather }) {
+function LiveWeatherCard({
+  weather,
+  displayStatus,
+  loading,
+}: {
+  weather: NormalizedWeather | null;
+  displayStatus: WeatherDisplayStatus;
+  loading: boolean;
+}) {
   return (
     <motion.div
+      id="live-run-status"
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5, ease: "easeOut" }}
@@ -124,50 +118,108 @@ function LiveWeatherCard({ weather }: { weather: LiveWeather }) {
       {/* Subtle gradient glow */}
       <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-accent/5 blur-3xl" />
 
-      <p className="text-xs font-medium uppercase tracking-widest text-accent/50">
-        Live at the Estate — {ESTATE_COORDINATES.name}
-      </p>
-
-      <div className="mt-4 flex items-center gap-4">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={owmIconUrl(weather.icon)}
-          alt={weather.description}
-          width={72}
-          height={72}
-          className="drop-shadow-lg"
-        />
-        <div>
-          <p className="font-lora text-5xl text-white">
-            {weather.temp}°
-            <span className="text-2xl text-accent/60">C</span>
-          </p>
-          <p className="mt-0.5 text-sm capitalize text-accent/70">
-            {weather.description}
+      {/* Header with LIVE RUN indicator */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5">
+          <span className="relative flex h-2.5 w-2.5">
+            <span
+              className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                loading
+                  ? "animate-pulse bg-amber-400"
+                  : weather
+                    ? "animate-ping bg-emerald-400"
+                    : "bg-rose-400"
+              }`}
+            />
+            <span
+              className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
+                loading
+                  ? "bg-amber-500"
+                  : weather
+                    ? "bg-emerald-500"
+                    : "bg-rose-500"
+              }`}
+            />
+          </span>
+          <p className="text-xs font-semibold uppercase tracking-widest text-accent/70">
+            LIVE RUN • {ESTATE_COORDINATES.name}
           </p>
         </div>
+
+        <span className="rounded-full border border-accent/20 bg-accent/10 px-3 py-1 text-xs font-bold uppercase tracking-wider text-accent">
+          {displayStatus}
+        </span>
       </div>
 
-      <div className="mt-6 grid grid-cols-2 gap-x-6 gap-y-3 text-sm text-accent/70 sm:grid-cols-4">
-        <div>
-          <p className="text-xs text-accent/40">Feels Like</p>
-          <p className="text-accent">{weather.feelsLike}°C</p>
-        </div>
-        <div>
-          <p className="text-xs text-accent/40">Humidity</p>
-          <p className="text-accent">{weather.humidity}%</p>
-        </div>
-        <div>
-          <p className="text-xs text-accent/40">Wind</p>
-          <p className="text-accent">{weather.windSpeed} km/h</p>
-        </div>
-        {weather.visibility !== null && (
+      {loading ? (
+        <div className="mt-6 flex items-center gap-4 py-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
           <div>
-            <p className="text-xs text-accent/40">Visibility</p>
-            <p className="text-accent">{weather.visibility} km</p>
+            <p className="font-lora text-xl text-white">Connecting to Weather Station...</p>
+            <p className="mt-0.5 text-xs text-accent/60">Fetching live conditions for the estate</p>
           </div>
-        )}
-      </div>
+        </div>
+      ) : weather ? (
+        <>
+          <div className="mt-4 flex items-center gap-4">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={owmIconUrl(weather.icon)}
+              alt={displayStatus}
+              width={72}
+              height={72}
+              className="drop-shadow-lg"
+            />
+            <div>
+              <div className="flex items-baseline gap-3">
+                <p className="font-lora text-5xl text-white">
+                  {weather.temp}°
+                  <span className="text-2xl text-accent/60">C</span>
+                </p>
+                <span className="text-sm font-semibold uppercase tracking-wider text-accent/90">
+                  {displayStatus}
+                </span>
+              </div>
+              <p className="mt-0.5 text-sm capitalize text-accent/70">
+                {weather.description}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-6 grid grid-cols-2 gap-x-6 gap-y-3 text-sm text-accent/70 sm:grid-cols-4">
+            <div>
+              <p className="text-xs text-accent/40">Feels Like</p>
+              <p className="text-accent">{weather.feelsLike}°C</p>
+            </div>
+            <div>
+              <p className="text-xs text-accent/40">Humidity</p>
+              <p className="text-accent">{weather.humidity}%</p>
+            </div>
+            <div>
+              <p className="text-xs text-accent/40">Wind</p>
+              <p className="text-accent">{weather.windSpeed} km/h</p>
+            </div>
+            {weather.visibility !== null && (
+              <div>
+                <p className="text-xs text-accent/40">Visibility</p>
+                <p className="text-accent">{weather.visibility} km</p>
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="mt-6 flex items-center gap-4 py-3">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-white/5 text-2xl">
+            ☁️
+          </div>
+          <div>
+            <p className="font-lora text-xl text-white">Station Offline</p>
+            <p className="mt-0.5 text-xs text-accent/60">
+              Live weather is temporarily unavailable. Seasonal climate guide shown below.
+            </p>
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -281,35 +333,7 @@ function MonthlyChart() {
 /* ------------------------------------------------------------------ */
 
 export default function WeatherSection() {
-  const [weather, setWeather] = useState<LiveWeather | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchWeather() {
-      try {
-        const res = await fetch("/api/weather");
-        const data = await res.json();
-        if (!cancelled && !data.fallback) {
-          setWeather(data as LiveWeather);
-        }
-      } catch {
-        // Silently degrade — static data is always shown
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    fetchWeather();
-
-    // Refresh every 30 minutes
-    const interval = setInterval(fetchWeather, 30 * 60 * 1000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, []);
+  const { weather, displayStatus, loading } = useWeather();
 
   return (
     <section id="weather" className="bg-dark-accent py-24 sm:py-32">
@@ -329,15 +353,13 @@ export default function WeatherSection() {
           </div>
         </FadeIn>
 
-        {/* Live weather */}
+        {/* Live weather / LIVE RUN status */}
         <div className="mt-14">
-          {loading ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
-            </div>
-          ) : weather ? (
-            <LiveWeatherCard weather={weather} />
-          ) : null}
+          <LiveWeatherCard
+            weather={weather}
+            displayStatus={displayStatus}
+            loading={loading}
+          />
         </div>
 
         {/* Season overview */}

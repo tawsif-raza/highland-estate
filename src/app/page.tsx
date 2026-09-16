@@ -2,6 +2,7 @@ import Navbar from "@/components/Navbar";
 import Hero from "@/components/Hero";
 import RoomsSection from "@/components/RoomsSection";
 import AmenitiesSection from "@/components/AmenitiesSection";
+import HighlandRailwayScene from "@/components/HighlandRailwayScene";
 import WeatherSection from "@/components/WeatherSection";
 import GallerySection from "@/components/GallerySection";
 import TestimonialsSection from "@/components/TestimonialsSection";
@@ -16,6 +17,7 @@ export default function Home() {
       <Hero />
       <RoomsSection />
       <AmenitiesSection />
+      <HighlandRailwayScene />
       <WeatherSection />
       <GallerySection />
       <TestimonialsSection />

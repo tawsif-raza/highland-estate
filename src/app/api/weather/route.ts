@@ -56,6 +56,8 @@ export async function GET() {
       visibility: raw.visibility ? Math.round(raw.visibility / 1000) : null, // m → km
       sunrise: raw.sys?.sunrise ?? null,
       sunset: raw.sys?.sunset ?? null,
+      weatherId: raw.weather?.[0]?.id ?? null,
+      weatherMain: raw.weather?.[0]?.main ?? null,
       fallback: false,
     };
 
