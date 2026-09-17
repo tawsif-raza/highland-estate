@@ -4,7 +4,6 @@ import { useRef } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { motion, useScroll, useTransform } from "framer-motion";
-import RainFogOverlay from "./RainFogOverlay";
 
 const HERO_IMAGE = "/images/hero-exterior.png";
 
@@ -40,9 +39,6 @@ export default function Hero() {
           className="object-cover"
         />
         <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/35 to-black/60" />
-
-        {/* Middle layer: rain/fog, locked to the same bounds as the image, clipped by overflow-hidden above */}
-        <RainFogOverlay />
       </motion.div>
 
       {/* Top layer: copy, centered on the viewport independently of the image/rain layers below */}
