@@ -357,18 +357,57 @@ function parseGeminiParts(
 }
 
 // ---------------------------------------------------------------------------
+// Shared transport helpers
+// ---------------------------------------------------------------------------
+
+// Every provider call goes through this so a hung upstream (no response,
+// dead connection) can't tie up the request indefinitely — without this,
+// a stalled fetch would hold the serverless invocation open until the
+// platform's own hard timeout killed it with a non-JSON error the frontend
+// can't parse, instead of the structured {ok:false} shape callers here rely on.
+const PROVIDER_TIMEOUT_MS = 20_000;
+
+// fetch() itself can throw (DNS failure, connection reset, abort) — none of
+// the provider call sites had a try/catch, so any transport-level failure
+// used to propagate as an unhandled exception out of the whole POST handler.
+// This normalizes a thrown error into the same {ok:false} shape a non-2xx
+// response produces, so the fallback chain below sees one consistent contract.
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<
+  { ok: true; response: Response } | { ok: false; reason: "TIMEOUT" | "NETWORK_ERROR" }
+> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    return { ok: true, response };
+  } catch (err) {
+    const reason = err instanceof Error && err.name === "AbortError" ? "TIMEOUT" : "NETWORK_ERROR";
+    return { ok: false, reason };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Groq
 // ---------------------------------------------------------------------------
 
-async function callGroqOnce(groqMessages: unknown[]) {
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+// gpt-oss-120b: Groq periodically decommissions older Llama snapshots
+// (llama-3.3-70b-versatile is no longer served — calling it 404s on every
+// request), so this is pinned to a currently-active model that Groq's docs
+// list as supporting tool calling; verify tool_calls output still works
+// before changing this again.
+const GROQ_MODEL = "openai/gpt-oss-120b";
+
+async function callGroqOnce(groqMessages: unknown[], requestId: string) {
+  const fetchResult = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
+      model: GROQ_MODEL,
       messages: groqMessages,
       tools: TOOL_DECLARATIONS.map((tool) => ({ type: "function", function: tool })),
       tool_choice: "auto",
@@ -376,12 +415,18 @@ async function callGroqOnce(groqMessages: unknown[]) {
     }),
   });
 
+  if (!fetchResult.ok) {
+    console.error(`[chat:${requestId}] groq transport error:`, fetchResult.reason);
+    return { ok: false as const, code: fetchResult.reason };
+  }
+
+  const response = fetchResult.response;
   if (response.ok) {
     return { ok: true as const, data: await response.json() };
   }
 
   const errorText = await response.text();
-  console.error("Groq API error:", response.status, errorText);
+  console.error(`[chat:${requestId}] groq API error:`, response.status, errorText);
 
   let code: string | undefined;
   try {
@@ -404,16 +449,22 @@ const MAX_TOOL_CALL_RETRIES = 2;
 // here — retrying those would just waste calls — and the code is returned
 // to the caller so POST can decide what to do (e.g. fall back to Gemini on
 // a rate limit) instead of collapsing every failure into the same signal.
-async function callGroq(groqMessages: unknown[]) {
+// Malformed tool-call syntax is retried because it's model flakiness (see
+// above); a bare transport hiccup (timeout/connection drop) is retried for
+// the same reason a Gemini UNAVAILABLE/INTERNAL is — it's usually gone a
+// moment later — but every other failure code is returned as-is.
+const GROQ_RETRYABLE_CODES = new Set(["tool_use_failed", "TIMEOUT", "NETWORK_ERROR"]);
+
+async function callGroq(groqMessages: unknown[], requestId: string) {
   let lastResult: Awaited<ReturnType<typeof callGroqOnce>> | null = null;
 
   for (let attempt = 0; attempt <= MAX_TOOL_CALL_RETRIES; attempt++) {
-    const result = await callGroqOnce(groqMessages);
+    const result = await callGroqOnce(groqMessages, requestId);
     if (result.ok) {
       return result;
     }
     lastResult = result;
-    if (result.code !== "tool_use_failed" || attempt === MAX_TOOL_CALL_RETRIES) {
+    if (!result.code || !GROQ_RETRYABLE_CODES.has(result.code) || attempt === MAX_TOOL_CALL_RETRIES) {
       return result;
     }
   }
@@ -425,8 +476,14 @@ async function callGroq(groqMessages: unknown[]) {
 // Kimi (Moonshot AI) — fallback 1
 // ---------------------------------------------------------------------------
 
-async function callKimiOnce(kimiMessages: unknown[]) {
-  const response = await fetch("https://api.moonshot.cn/v1/chat/completions", {
+// api.moonshot.ai (international), NOT api.moonshot.cn (mainland-China-only
+// endpoint) — the configured KIMI_API_KEY is an international-platform key,
+// and calling the .cn host with it returns a blanket 401 Invalid
+// Authentication on every request regardless of key validity.
+const KIMI_ENDPOINT = "https://api.moonshot.ai/v1/chat/completions";
+
+async function callKimiOnce(kimiMessages: unknown[], requestId: string) {
+  const fetchResult = await fetchWithTimeout(KIMI_ENDPOINT, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -441,32 +498,48 @@ async function callKimiOnce(kimiMessages: unknown[]) {
     }),
   });
 
+  if (!fetchResult.ok) {
+    console.error(`[chat:${requestId}] kimi transport error:`, fetchResult.reason);
+    return { ok: false as const, code: fetchResult.reason };
+  }
+
+  const response = fetchResult.response;
   if (response.ok) {
     return { ok: true as const, data: await response.json() };
   }
 
   const errorText = await response.text();
-  console.error("Kimi API error:", response.status, errorText);
+  console.error(`[chat:${requestId}] kimi API error:`, response.status, errorText);
 
+  // Moonshot's error body uses `error.type` (e.g. "exceeded_current_quota_error",
+  // "invalid_authentication_error"), not the OpenAI-style `error.code` this
+  // used to read exclusively — that mismatch meant `code` was always
+  // undefined here, so a genuine quota/auth failure was indistinguishable
+  // from a parse failure. Both fields are captured now; callers key off
+  // whichever is present.
   let code: string | undefined;
   try {
-    code = JSON.parse(errorText)?.error?.code;
+    const parsed = JSON.parse(errorText)?.error;
+    code = parsed?.code ?? parsed?.type;
   } catch {
+    // Non-JSON error body — leave code undefined, treated as non-retryable below.
   }
 
   return { ok: false as const, code };
 }
 
-async function callKimi(kimiMessages: unknown[]) {
+const KIMI_RETRYABLE_CODES = new Set(["tool_use_failed", "TIMEOUT", "NETWORK_ERROR"]);
+
+async function callKimi(kimiMessages: unknown[], requestId: string) {
   let lastResult: Awaited<ReturnType<typeof callKimiOnce>> | null = null;
 
   for (let attempt = 0; attempt <= MAX_TOOL_CALL_RETRIES; attempt++) {
-    const result = await callKimiOnce(kimiMessages);
+    const result = await callKimiOnce(kimiMessages, requestId);
     if (result.ok) {
       return result;
     }
     lastResult = result;
-    if (result.code !== "tool_use_failed" || attempt === MAX_TOOL_CALL_RETRIES) {
+    if (!result.code || !KIMI_RETRYABLE_CODES.has(result.code) || attempt === MAX_TOOL_CALL_RETRIES) {
       return result;
     }
   }
@@ -481,8 +554,8 @@ async function callKimi(kimiMessages: unknown[]) {
 const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
-async function callGeminiOnce(systemPrompt: string, contents: unknown[]) {
-  const response = await fetch(GEMINI_ENDPOINT, {
+async function callGeminiOnce(systemPrompt: string, contents: unknown[], requestId: string) {
+  const fetchResult = await fetchWithTimeout(GEMINI_ENDPOINT, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -498,12 +571,18 @@ async function callGeminiOnce(systemPrompt: string, contents: unknown[]) {
     }),
   });
 
+  if (!fetchResult.ok) {
+    console.error(`[chat:${requestId}] gemini transport error:`, fetchResult.reason);
+    return { ok: false as const, status: fetchResult.reason };
+  }
+
+  const response = fetchResult.response;
   if (response.ok) {
     return { ok: true as const, data: await response.json() };
   }
 
   const errorText = await response.text();
-  console.error("Gemini API error:", response.status, errorText);
+  console.error(`[chat:${requestId}] gemini API error:`, response.status, errorText);
 
   let status: string | undefined;
   try {
@@ -517,16 +596,17 @@ async function callGeminiOnce(systemPrompt: string, contents: unknown[]) {
 
 const MAX_TRANSIENT_RETRIES = 2;
 // Gemini status codes worth an immediate retry — genuinely transient server-
-// side hiccups. RESOURCE_EXHAUSTED (quota) is deliberately excluded: retrying
-// a quota error just burns more of a budget that isn't coming back this
-// minute, so it's surfaced to the caller as-is instead.
-const RETRYABLE_GEMINI_STATUSES = new Set(["UNAVAILABLE", "INTERNAL"]);
+// side hiccups, plus our own transport-level timeout/network error, which is
+// just as likely to be a one-off. RESOURCE_EXHAUSTED (quota) is deliberately
+// excluded: retrying a quota error just burns more of a budget that isn't
+// coming back this minute, so it's surfaced to the caller as-is instead.
+const RETRYABLE_GEMINI_STATUSES = new Set(["UNAVAILABLE", "INTERNAL", "TIMEOUT", "NETWORK_ERROR"]);
 
-async function callGemini(systemPrompt: string, contents: unknown[]) {
+async function callGemini(systemPrompt: string, contents: unknown[], requestId: string) {
   let lastResult: Awaited<ReturnType<typeof callGeminiOnce>> | null = null;
 
   for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
-    const result = await callGeminiOnce(systemPrompt, contents);
+    const result = await callGeminiOnce(systemPrompt, contents, requestId);
     if (result.ok) {
       return result;
     }
@@ -547,7 +627,45 @@ const RATE_LIMIT_REPLY =
   "The Estate Concierge is getting a lot of requests right now and has reached its limit for the moment. Please try again in a few minutes.";
 const GENERIC_FAILURE_REPLY = "I'm having trouble connecting right now. Please try again shortly.";
 
+// Signals from any provider (Gemini's `status`, Groq/Kimi's `code`) that mean
+// "out of quota/being rate-limited" rather than "broken" — used only to pick
+// which of the two user-facing messages above to show; it never changes
+// whether we fall back to the next provider (every failure does that).
+const RATE_LIMIT_SIGNALS = new Set([
+  "RESOURCE_EXHAUSTED",
+  "rate_limit_exceeded",
+  "exceeded_current_quota_error",
+]);
+
+// A booking can succeed earlier in this turn's tool-call loop and then the
+// provider chain can still go on to fail on a *later* round (e.g. the final
+// "here's your confirmation" reply). The guest must never be told "trouble
+// connecting" when their booking already went through, so both failure exits
+// below route through this first.
+function respondWithFailure(
+  bookingOutcome: CreateBookingResult | null,
+  fallbackReply: string,
+  status: number,
+) {
+  if (bookingOutcome) {
+    const reply =
+      "error" in bookingOutcome
+        ? "That room just became unavailable — here's what happened:"
+        : "Your booking is confirmed — here are the details:";
+
+    return NextResponse.json({ reply, ...bookingOutcomeFields(bookingOutcome) });
+  }
+
+  return NextResponse.json({ reply: fallbackReply }, { status });
+}
+
 export async function POST(request: Request) {
+  const requestId =
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const requestStart = Date.now();
+
   const { messages } = (await request.json()) as { messages: Message[] };
 
   // Computed once per request from the full message history, then reused
@@ -564,10 +682,16 @@ export async function POST(request: Request) {
   // round cap trips before the model gets to talk about it.
   let bookingOutcome: CreateBookingResult | null = null;
 
-  // Priority chain: gemini -> kimi -> groq
-  // If one fails with a rate limit or resource exhaustion, we fall back to the next.
+  // Priority chain: gemini -> kimi -> groq. Every provider failure falls
+  // through to the next one, regardless of the specific error — the previous
+  // version only fell back on a couple of recognized status codes (e.g.
+  // Gemini's RESOURCE_EXHAUSTED) and returned the generic failure immediately
+  // for anything else (a bad API key, a malformed request, an unrecognized
+  // error shape), which meant a single misconfigured provider could look
+  // like a total outage even though the next provider in line was healthy.
   type Provider = "gemini" | "kimi" | "groq";
   let activeProvider: Provider = "gemini";
+  let sawRateLimitSignal = false;
 
   // Budget for tool-call rounds within this one turn. A booking turn can
   // legitimately need several in sequence (check_availability ->
@@ -578,39 +702,53 @@ export async function POST(request: Request) {
     let parsed: ParsedTurn;
 
     if (activeProvider === "gemini") {
-      const geminiResult = await callGemini(systemPrompt, toGeminiContents(turns));
+      const geminiResult = await callGemini(systemPrompt, toGeminiContents(turns), requestId);
       if (geminiResult.ok) {
         const parts = geminiResult.data.candidates?.[0]?.content?.parts ?? [];
         parsed = parseGeminiParts(parts);
-      } else if (geminiResult.status === "RESOURCE_EXHAUSTED" || !geminiResult.status) {
-        console.warn("Gemini limit hit or failed — falling back to Kimi for the rest of this turn.");
+      } else {
+        if (geminiResult.status && RATE_LIMIT_SIGNALS.has(geminiResult.status)) {
+          sawRateLimitSignal = true;
+        }
+        console.warn(
+          `[chat:${requestId}] gemini failed (${geminiResult.status ?? "unknown"}) — falling back to kimi`,
+        );
         activeProvider = "kimi";
         continue;
-      } else {
-        return NextResponse.json({ reply: GENERIC_FAILURE_REPLY }, { status: 502 });
       }
     } else if (activeProvider === "kimi") {
-      const kimiResult = await callKimi(toGroqMessages(systemPrompt, turns));
+      const kimiResult = await callKimi(toGroqMessages(systemPrompt, turns), requestId);
       if (kimiResult.ok) {
         const choice = kimiResult.data.choices?.[0];
         parsed = parseGroqChoice(choice ?? {});
-      } else if (kimiResult.code === "rate_limit_exceeded" || !kimiResult.code) {
-        console.warn("Kimi limit hit or failed — falling back to Groq for the rest of this turn.");
+      } else {
+        if (kimiResult.code && RATE_LIMIT_SIGNALS.has(kimiResult.code)) {
+          sawRateLimitSignal = true;
+        }
+        console.warn(
+          `[chat:${requestId}] kimi failed (${kimiResult.code ?? "unknown"}) — falling back to groq`,
+        );
         activeProvider = "groq";
         continue;
-      } else {
-        return NextResponse.json({ reply: GENERIC_FAILURE_REPLY }, { status: 502 });
       }
     } else {
-      const groqResult = await callGroq(toGroqMessages(systemPrompt, turns));
+      const groqResult = await callGroq(toGroqMessages(systemPrompt, turns), requestId);
       if (groqResult.ok) {
         const choice = groqResult.data.choices?.[0];
         parsed = parseGroqChoice(choice ?? {});
-      } else if (groqResult.code === "rate_limit_exceeded") {
-        // All providers exhausted
-        return NextResponse.json({ reply: RATE_LIMIT_REPLY }, { status: 503 });
       } else {
-        return NextResponse.json({ reply: GENERIC_FAILURE_REPLY }, { status: 502 });
+        if (groqResult.code && RATE_LIMIT_SIGNALS.has(groqResult.code)) {
+          sawRateLimitSignal = true;
+        }
+        // All providers exhausted for this round.
+        console.error(
+          `[chat:${requestId}] all providers exhausted; final failure: groq (${groqResult.code ?? "unknown"}); elapsed=${Date.now() - requestStart}ms`,
+        );
+        return respondWithFailure(
+          bookingOutcome,
+          sawRateLimitSignal ? RATE_LIMIT_REPLY : GENERIC_FAILURE_REPLY,
+          sawRateLimitSignal ? 503 : 502,
+        );
       }
     }
 
@@ -619,6 +757,10 @@ export async function POST(request: Request) {
         .filter((part): part is Extract<CanonicalPart, { type: "text" }> => part.type === "text")
         .map((part) => part.text)
         .join("");
+
+      console.log(
+        `[chat:${requestId}] completed via ${activeProvider}; round=${i}; elapsed=${Date.now() - requestStart}ms`,
+      );
 
       return NextResponse.json({
         reply,
@@ -645,20 +787,10 @@ export async function POST(request: Request) {
   // booking was actually created (or definitively rejected) along the way,
   // that real outcome takes priority over the generic fallback — the guest
   // should never be told "try again" when a booking already went through.
-  if (bookingOutcome) {
-    const reply =
-      "error" in bookingOutcome
-        ? "That room just became unavailable — here's what happened:"
-        : "Your booking is confirmed — here are the details:";
-
-    return NextResponse.json({
-      reply,
-      ...bookingOutcomeFields(bookingOutcome),
-    });
-  }
-
-  return NextResponse.json(
-    { reply: "I'm having trouble completing that request right now. Please try again shortly." },
-    { status: 502 },
+  console.error(`[chat:${requestId}] round cap hit with no final reply; elapsed=${Date.now() - requestStart}ms`);
+  return respondWithFailure(
+    bookingOutcome,
+    "I'm having trouble completing that request right now. Please try again shortly.",
+    502,
   );
 }

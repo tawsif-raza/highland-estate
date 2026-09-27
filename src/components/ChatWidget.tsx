@@ -334,7 +334,22 @@ export default function ChatWidget() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
+  // Client-side timeout, separate from the backend's own per-provider one —
+  // this bounds how long the UI will sit in the "typing" state even if the
+  // request never reaches a response at all (e.g. a dropped connection that
+  // never surfaces a fetch error), so the composer can't get stuck disabled.
+  const REQUEST_TIMEOUT_MS = 30_000;
+
   const handleSend = async (overrideText?: string) => {
+    // isTyping already disables the input/button below, but this also
+    // guards the suggestion-chip path (which calls handleSend directly, not
+    // through the disabled form) against firing a second overlapping
+    // request — a second call while one is in flight would otherwise build
+    // updatedMessages from a stale `messages` closure and send the backend
+    // a history that's missing whatever the first in-flight request hasn't
+    // resolved yet.
+    if (isTyping) return;
+
     const text = (overrideText ?? input).trim();
     if (!text) return;
 
@@ -345,11 +360,15 @@ export default function ChatWidget() {
     setInput("");
     setIsTyping(true);
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: updatedMessages }),
+        signal: controller.signal,
       });
       const data = await res.json();
 
@@ -363,17 +382,21 @@ export default function ChatWidget() {
           bookingError: data.bookingError,
         },
       ]);
-    } catch {
+    } catch (err) {
+      const isTimeout = err instanceof Error && err.name === "AbortError";
       setMessages((prev) => [
         ...prev,
         {
           id: nextId(),
           sender: "bot",
-          text: "Something went wrong sending that. Please check your connection and try again.",
+          text: isTimeout
+            ? "That's taking longer than expected. Please try again."
+            : "Something went wrong sending that. Please check your connection and try again.",
           isError: true,
         },
       ]);
     } finally {
+      clearTimeout(timeout);
       setIsTyping(false);
     }
   };
@@ -486,11 +509,13 @@ export default function ChatWidget() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="Type a message..."
-                className="flex-1 rounded-full border border-[#4A3320]/20 bg-white px-4 py-2 text-sm text-[#1c2a22] placeholder:text-[#1c2a22]/40 focus:outline-none focus:ring-2 focus:ring-[#4A3320]/30"
+                disabled={isTyping}
+                className="flex-1 rounded-full border border-[#4A3320]/20 bg-white px-4 py-2 text-sm text-[#1c2a22] placeholder:text-[#1c2a22]/40 focus:outline-none focus:ring-2 focus:ring-[#4A3320]/30 disabled:opacity-60"
               />
               <button
                 type="submit"
-                className="flex-none rounded-full bg-[#4A3320] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#4A3320]/90"
+                disabled={isTyping}
+                className="flex-none rounded-full bg-[#4A3320] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#4A3320]/90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Send
               </button>
