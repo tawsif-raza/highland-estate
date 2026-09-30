@@ -268,6 +268,42 @@ describe("POST /api/chat", () => {
     expect(sentText).not.toMatch(/Something went wrong sending/i);
     expect(sentText).toContain("Welcome to The Highland Estate");
     expect(sentText).toContain("hello");
+    // The earlier user messages only ever got error notices, so they were never
+    // really answered — sending them would make the model answer a stale question
+    // instead of "hello".
+    expect(sentText).not.toContain('"text":"hi"');
+    expect(sentText).not.toContain('"text":"hy"');
+  });
+
+  it("keeps a real question/answer exchange in the history", async () => {
+    geminiQueue.push(geminiTextReply("Happy to help with dates!"));
+
+    await POST(
+      chatRequest("thanks", [
+        { id: 1, sender: "user", text: "What rooms do you have?" },
+        { id: 2, sender: "bot", text: "We have the Mist Cabin, Canopy Suite and Plantation Villa." },
+      ]),
+    );
+
+    const geminiCall = vi.mocked(fetch).mock.calls.find(([url]) =>
+      String(url).includes("generativelanguage.googleapis.com"),
+    );
+    const sentText = String((geminiCall?.[1] as RequestInit).body);
+    expect(sentText).toContain("What rooms do you have?");
+    expect(sentText).toContain("We have the Mist Cabin");
+  });
+
+  it("tells the model that greetings are on-topic and must not trigger the off-topic refusal or a sales pitch", async () => {
+    geminiQueue.push(geminiTextReply("Hello! How can I help?"));
+
+    await POST(chatRequest("hello"));
+
+    const geminiCall = vi.mocked(fetch).mock.calls.find(([url]) =>
+      String(url).includes("generativelanguage.googleapis.com"),
+    );
+    const sentText = String((geminiCall?.[1] as RequestInit).body);
+    expect(sentText).toMatch(/Greetings and small talk are ALWAYS on-topic/);
+    expect(sentText).toMatch(/Do NOT list rooms or prices/);
   });
 
   it("handles an empty/whitespace-only message without throwing", async () => {

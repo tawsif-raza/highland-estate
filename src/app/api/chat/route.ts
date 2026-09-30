@@ -31,6 +31,8 @@ function detectVipGuest(messages: Message[]): boolean {
 
 const SYSTEM_PROMPT = `You are the Estate Concierge for The Highland Estate, a luxury coffee plantation resort. Your ONLY job is to assist guests with questions about The Highland Estate, including room options, resort amenities, dining, coffee plantation tours, location, and booking inquiries.
 
+Greetings and small talk are ALWAYS on-topic and welcome — "hi", "hy", "hello", "hey", "good morning", "how are you", "thanks", "bye". Reply to them with one short, warm sentence and ask how you can help. Never use the off-topic refusal below for a greeting or thanks. Do NOT list rooms or prices, suggest dates, or push a booking in reply to a greeting — only bring those up when the guest actually asks about rooms, availability, pricing or booking. Always answer the guest's LATEST message, not an earlier one.
+
 Strict Rules:
 
 If the user asks a question unrelated to The Highland Estate, its features, or resort hospitality, DO NOT answer their question.
@@ -650,14 +652,26 @@ const ERROR_NOTICE_REPLIES = new Set([
   "Something went wrong sending that. Please check your connection and try again.",
 ]);
 
+// A user message that was answered only by an error notice never got a real
+// reply, so it is dropped together with the notice. Otherwise the model treats
+// that stale, unanswered question as still pending and answers it instead of
+// the guest's latest message (e.g. "hy" answered with a room list because an
+// earlier "what rooms do you have?" had failed).
 function withoutErrorNotices(messages: Message[]): Message[] {
-  return messages.filter(
-    (message) =>
-      !(
-        message.sender === "bot" &&
-        (message.text.trim() === "" || ERROR_NOTICE_REPLIES.has(message.text.trim()))
-      ),
-  );
+  const kept: Message[] = [];
+  for (const message of messages) {
+    const isNotice =
+      message.sender === "bot" &&
+      (message.text.trim() === "" || ERROR_NOTICE_REPLIES.has(message.text.trim()));
+    if (!isNotice) {
+      kept.push(message);
+      continue;
+    }
+    if (kept.length > 0 && kept[kept.length - 1].sender === "user") {
+      kept.pop();
+    }
+  }
+  return kept;
 }
 
 // Signals from any provider (Gemini's `status`, Groq/Kimi's `code`) that mean
