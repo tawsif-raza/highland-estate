@@ -634,6 +634,31 @@ async function callGemini(systemPrompt: string, contents: unknown[], requestId: 
 const RATE_LIMIT_REPLY =
   "The Estate Concierge is getting a lot of requests right now and has reached its limit for the moment. Please try again in a few minutes.";
 const GENERIC_FAILURE_REPLY = "I'm having trouble connecting right now. Please try again shortly.";
+const ROUND_CAP_REPLY = "I'm having trouble completing that request right now. Please try again shortly.";
+
+// Bot messages that are really error notices (from this route, or from the
+// chat widget's own catch block), not real conversation. The widget persists
+// every bot message and resends the whole history on each request, so if these
+// reached the model it would see itself "saying" it has trouble connecting and
+// imitate that — replying with the error text even though every provider is
+// healthy. They are stripped from the history before it is sent upstream.
+const ERROR_NOTICE_REPLIES = new Set([
+  RATE_LIMIT_REPLY,
+  GENERIC_FAILURE_REPLY,
+  ROUND_CAP_REPLY,
+  "That's taking longer than expected. Please try again.",
+  "Something went wrong sending that. Please check your connection and try again.",
+]);
+
+function withoutErrorNotices(messages: Message[]): Message[] {
+  return messages.filter(
+    (message) =>
+      !(
+        message.sender === "bot" &&
+        (message.text.trim() === "" || ERROR_NOTICE_REPLIES.has(message.text.trim()))
+      ),
+  );
+}
 
 // Signals from any provider (Gemini's `status`, Groq/Kimi's `code`) that mean
 // "out of quota/being rate-limited" rather than "broken" — used only to pick
@@ -681,7 +706,7 @@ export async function POST(request: Request) {
   const isVipGuest = detectVipGuest(messages);
   const systemPrompt = isVipGuest ? VIP_SYSTEM_PROMPT : SYSTEM_PROMPT;
 
-  const turns: CanonicalTurn[] = messages.map((message) => ({
+  const turns: CanonicalTurn[] = withoutErrorNotices(messages).map((message) => ({
     role: message.sender === "user" ? "user" : "model",
     parts: [{ type: "text", text: message.text }],
   }));
@@ -796,9 +821,5 @@ export async function POST(request: Request) {
   // that real outcome takes priority over the generic fallback — the guest
   // should never be told "try again" when a booking already went through.
   console.error(`[chat:${requestId}] round cap hit with no final reply; elapsed=${Date.now() - requestStart}ms`);
-  return respondWithFailure(
-    bookingOutcome,
-    "I'm having trouble completing that request right now. Please try again shortly.",
-    502,
-  );
+  return respondWithFailure(bookingOutcome, ROUND_CAP_REPLY, 502);
 }

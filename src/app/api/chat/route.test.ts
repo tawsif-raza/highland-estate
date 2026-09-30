@@ -240,6 +240,36 @@ describe("POST /api/chat", () => {
     expect(body.reply).not.toMatch(/trouble connecting/i);
   });
 
+  it("never feeds earlier error notices back to the model as conversation history", async () => {
+    // The widget persists every bot message (including "trouble connecting"
+    // errors) and resends the whole history. If those reached the model it
+    // would imitate them and answer with the error even though providers are
+    // healthy, so they must be stripped before the upstream call.
+    geminiQueue.push(geminiTextReply("Hello! How can I help?"));
+
+    const res = await POST(
+      chatRequest("hello", [
+        { id: 1, sender: "bot", text: "Welcome to The Highland Estate! How can I help?" },
+        { id: 2, sender: "user", text: "hi" },
+        { id: 3, sender: "bot", text: "I'm having trouble connecting right now. Please try again shortly." },
+        { id: 4, sender: "user", text: "hy" },
+        { id: 5, sender: "bot", text: "Something went wrong sending that. Please check your connection and try again." },
+        { id: 6, sender: "bot", text: "" },
+      ]),
+    );
+    const body = await res.json();
+    expect(body.reply).toBe("Hello! How can I help?");
+
+    const geminiCall = vi.mocked(fetch).mock.calls.find(([url]) =>
+      String(url).includes("generativelanguage.googleapis.com"),
+    );
+    const sentText = String((geminiCall?.[1] as RequestInit).body);
+    expect(sentText).not.toMatch(/trouble connecting/i);
+    expect(sentText).not.toMatch(/Something went wrong sending/i);
+    expect(sentText).toContain("Welcome to The Highland Estate");
+    expect(sentText).toContain("hello");
+  });
+
   it("handles an empty/whitespace-only message without throwing", async () => {
     geminiQueue.push(geminiTextReply("How can I help?"));
 
