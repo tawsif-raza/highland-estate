@@ -213,12 +213,14 @@ describe("POST /api/chat", () => {
   });
 
   it("surfaces a completed booking instead of the generic failure if providers fail on a later round", async () => {
-    // Round 1: Gemini calls create_booking successfully.
+    // Round 1: Gemini calls create_booking successfully. Dates sit well beyond
+    // the demo data's pre-booked windows (which are relative to "today"), so
+    // this stays bookable no matter when the suite runs.
     geminiQueue.push(
       geminiFunctionCall("create_booking", {
         roomId: "mist-cabin",
-        checkIn: "2026-11-01",
-        checkOut: "2026-11-03",
+        checkIn: "2027-06-01",
+        checkOut: "2027-06-03",
         guests: 2,
         guestName: "Test Guest",
         guestEmail: "test@example.com",

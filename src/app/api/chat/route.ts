@@ -411,7 +411,11 @@ async function callGroqOnce(groqMessages: unknown[], requestId: string) {
       messages: groqMessages,
       tools: TOOL_DECLARATIONS.map((tool) => ({ type: "function", function: tool })),
       tool_choice: "auto",
-      max_tokens: 150,
+      // gpt-oss is a reasoning model: its hidden reasoning tokens count against
+      // max_tokens, so a tight cap (the old 150) truncated or emptied the visible
+      // reply. Keep reasoning short and leave room for the answer itself.
+      reasoning_effort: "low",
+      max_tokens: 1024,
     }),
   });
 
@@ -494,7 +498,7 @@ async function callKimiOnce(kimiMessages: unknown[], requestId: string) {
       messages: kimiMessages,
       tools: TOOL_DECLARATIONS.map((tool) => ({ type: "function", function: tool })),
       tool_choice: "auto",
-      max_tokens: 150,
+      max_tokens: 400,
     }),
   });
 
@@ -566,7 +570,11 @@ async function callGeminiOnce(systemPrompt: string, contents: unknown[], request
       contents,
       tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
       generationConfig: {
-        maxOutputTokens: 150,
+        // Gemini 2.5 "thinking" tokens count against maxOutputTokens; with the old
+        // 150 cap they consumed the whole budget (finishReason MAX_TOKENS) and left
+        // a truncated reply. Disable thinking for this short-answer concierge.
+        maxOutputTokens: 1024,
+        thinkingConfig: { thinkingBudget: 0 },
       },
     }),
   });
