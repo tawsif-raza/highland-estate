@@ -1,47 +1,38 @@
 "use client";
 
 import { useRef } from "react";
-import Image from "next/image";
 import Link from "next/link";
-import { motion, useScroll, useTransform } from "framer-motion";
-
-const HERO_IMAGE = "/images/hero-exterior.png";
+import { motion, useScroll } from "framer-motion";
+import HeroBackdrop from "@/components/hero3d/HeroBackdrop";
+import { useWeather } from "@/hooks/useWeather";
 
 export default function Hero() {
   const sectionRef = useRef<HTMLElement | null>(null);
 
-  // Drives a cinematic zoom as the hero scrolls out of view. This replaces
-  // the earlier "grow from a tiny box" scroll-jacking approach: the image
-  // fills the screen from the first frame, exactly like a normal hero
-  // background, and just scales up slightly as the user scrolls past it.
+  // Scroll progress of the hero leaving the screen. The backdrop turns this
+  // into a camera pull-back in the 3D scene (or a slow zoom on the still poster).
   const { scrollYProgress } = useScroll({
     target: sectionRef,
     offset: ["start start", "end start"],
   });
-  const imageScale = useTransform(scrollYProgress, [0, 1], [1, 1.2]);
+
+  // Fetched once here and handed down, so the scene reflects the estate's real
+  // weather without a second request from inside the canvas.
+  const { weather, displayStatus } = useWeather();
 
   return (
     <section
       ref={sectionRef}
       className="relative flex min-h-screen items-center justify-center overflow-hidden"
     >
-      {/* Bottom layer: full-screen background image, subtly zooming on scroll */}
-      <motion.div
-        className="absolute inset-0 z-0 overflow-hidden"
-        style={{ scale: imageScale }}
-      >
-        <Image
-          src={HERO_IMAGE}
-          alt="The Highland Estate at dusk, misty cabins glowing among the hills"
-          fill
-          priority
-          sizes="100vw"
-          className="object-cover"
-        />
-        <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/35 to-black/60" />
-      </motion.div>
+      {/* Bottom layer: cinematic 3D scene (poster image until it is ready) */}
+      <HeroBackdrop
+        scrollProgress={scrollYProgress}
+        weather={weather}
+        displayStatus={displayStatus}
+      />
 
-      {/* Top layer: copy, centered on the viewport independently of the image/rain layers below */}
+      {/* Top layer: copy, centered on the viewport independently of the scene below */}
       <div className="relative z-20 mx-auto flex max-w-4xl flex-col items-center px-6 text-center">
         <motion.h1
           initial={{ opacity: 0, y: 20 }}

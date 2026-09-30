@@ -8,7 +8,9 @@ let cachedWeather: { data: Record<string, unknown>; expiresAt: number } | null =
 const CACHE_DURATION_MS = 30 * 60 * 1000; // 30 minutes
 
 export async function GET() {
-  const apiKey = process.env.OPENWEATHERMAP_API_KEY;
+  // WEATHER_API_KEY is accepted as an alias: it is the name used in the local
+  // .env, so without this the live weather silently never loaded there.
+  const apiKey = process.env.OPENWEATHERMAP_API_KEY ?? process.env.WEATHER_API_KEY;
 
   // Graceful degradation: if no API key is configured, return a clear
   // signal so the client can fall back to showing only static climate data.
