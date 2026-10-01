@@ -17,9 +17,14 @@ import {
   mapEnvironment,
   parseEnvOverride,
   type EnvironmentInput,
-  type Phase,
 } from "@/lib/hero-environment";
 import type { NormalizedWeather, WeatherDisplayStatus } from "@/lib/weather-service";
+import SceneSettings, {
+  DEFAULT_TIME,
+  DEFAULT_WEATHER,
+  type TimeChoice,
+  type WeatherChoice,
+} from "./SceneSettings";
 
 // Module-level dynamic import (ssr: false) keeps three.js out of the first
 // page load; it is only fetched once the browser is idle and capable.
@@ -37,16 +42,6 @@ const INITIAL_ENVIRONMENT = mapEnvironment(
 );
 
 const TIERS: QualityTier[] = ["high", "medium", "low"];
-
-type Mode = "live" | Phase;
-
-const MODES: { id: Mode; label: string; active: string }[] = [
-  { id: "live", label: "Live", active: "bg-amber-300/20 text-amber-200 border border-amber-300/40" },
-  { id: "dawn", label: "Dawn", active: "bg-rose-300/20 text-rose-200 border border-rose-300/35" },
-  { id: "day", label: "Day", active: "bg-sky-300/20 text-sky-200 border border-sky-300/35" },
-  { id: "dusk", label: "Dusk", active: "bg-orange-300/20 text-orange-200 border border-orange-300/35" },
-  { id: "night", label: "Night", active: "bg-indigo-300/20 text-indigo-200 border border-indigo-300/35" },
-];
 
 // --- tiny external stores (hydration-safe: the server always sees 0 / "") -----
 
@@ -86,7 +81,11 @@ export default function HeroBackdrop({ scrollProgress, weather, displayStatus }:
   const clock = useSyncExternalStore(subscribeClock, getClock, getServerClock);
   const search = useSyncExternalStore(subscribeNever, getSearch, getServerSearch);
 
-  const [mode, setMode] = useState<Mode>("live");
+  // The scene opens at dusk (exactly the photo's own look); the settings panel changes it.
+  const [time, setTime] = useState<TimeChoice>(DEFAULT_TIME);
+  const [weatherChoice, setWeatherChoice] = useState<WeatherChoice>(DEFAULT_WEATHER);
+  // Until the visitor touches the settings, a demo URL (?env=&wx=) can still steer the scene.
+  const [touched, setTouched] = useState(false);
   const [mountScene, setMountScene] = useState(false);
   const [ready, setReady] = useState(false);
   const [lost, setLost] = useState(false);
@@ -138,6 +137,11 @@ export default function HeroBackdrop({ scrollProgress, weather, displayStatus }:
 
   const override = useMemo(() => parseEnvOverride(search), [search]);
 
+  const chosenPhase = time !== "live" ? time : undefined;
+  const chosenWeather = weatherChoice !== "live" ? weatherChoice : undefined;
+  const effectivePhase = touched ? chosenPhase : (override.phase ?? chosenPhase);
+  const effectiveWeather = touched ? chosenWeather : (override.weather ?? chosenWeather);
+
   const environment = useMemo(() => {
     if (clock === 0) return INITIAL_ENVIRONMENT;
     const date = new Date(clock);
@@ -152,13 +156,8 @@ export default function HeroBackdrop({ scrollProgress, weather, displayStatus }:
       // The weather API returns visibility in km; the environment model wants metres.
       visibility: weather?.visibility != null ? weather.visibility * 1000 : null,
     };
-    return mapEnvironment(
-      applyOverride(input, {
-        phase: mode !== "live" ? mode : override.phase,
-        weather: override.weather,
-      }),
-    );
-  }, [clock, weather, mode, override]);
+    return mapEnvironment(applyOverride(input, { phase: effectivePhase, weather: effectiveWeather }));
+  }, [clock, weather, effectivePhase, effectiveWeather]);
 
   const handleReady = useCallback(() => setReady(true), []);
   const handleContextLost = useCallback(() => {
@@ -183,12 +182,25 @@ export default function HeroBackdrop({ scrollProgress, weather, displayStatus }:
   const sceneScale = useTransform(scrollProgress, [0, 1], [1, 1.06]);
   const sceneOpacity = useTransform(scrollProgress, [0, 0.9], [1, 0.3]);
 
-  const forcedPhase = mode !== "live" ? mode : override.phase;
-  const statusText = override.weather
-    ? sentenceCase(override.weather)
-    : weather && displayStatus !== "CHECKING WEATHER..." && displayStatus !== "WEATHER UNAVAILABLE"
+  const handleTimeChange = useCallback((next: TimeChoice) => {
+    setTouched(true);
+    setTime(next);
+  }, []);
+  const handleWeatherChange = useCallback((next: WeatherChoice) => {
+    setTouched(true);
+    setWeatherChoice(next);
+  }, []);
+
+  // What it is really like in Coorg right now (independent of the visitor's choices).
+  const liveStatus =
+    weather && displayStatus !== "CHECKING WEATHER..." && displayStatus !== "WEATHER UNAVAILABLE"
       ? sentenceCase(displayStatus)
       : null;
+  const liveSummary = clock
+    ? [formatEstateTime(clock), liveStatus, weather ? `${Math.round(weather.temp)}°C` : null]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
 
   // More scrim behind the copy when the scene is bright (day, dawn).
   const brightScene = environment.phase === "day" || environment.phase === "dawn";
@@ -260,48 +272,16 @@ export default function HeroBackdrop({ scrollProgress, weather, displayStatus }:
       </motion.div>
 
       {showScene && clock !== 0 && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-6 z-30 flex items-end justify-between gap-3 px-4 sm:pl-8 sm:pr-24">
-          <div className="pointer-events-auto inline-flex max-w-full items-center gap-2.5 rounded-full border border-white/10 bg-[rgba(20,14,10,0.55)] px-4 py-2 text-xs font-medium tracking-wide text-[#E8EDEB] backdrop-blur-md">
-            <span className="relative flex h-2 w-2 shrink-0">
-              {!forcedPhase && (
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-300/70" />
-              )}
-              <span
-                className={`relative inline-flex h-2 w-2 rounded-full ${forcedPhase ? "bg-white/50" : "bg-amber-300"}`}
-              />
-            </span>
-            <span className="truncate">
-              {forcedPhase ? (
-                <>Preview · {sentenceCase(forcedPhase)}</>
-              ) : (
-                <>
-                  Live · Coorg {formatEstateTime(clock)}
-                  {statusText ? ` · ${statusText}` : ""}
-                  {weather && !override.weather ? ` · ${Math.round(weather.temp)}°C` : ""}
-                </>
-              )}
-            </span>
-          </div>
-
-          <div
-            role="group"
-            aria-label="Time of day"
-            className="pointer-events-auto hidden items-center rounded-full border border-white/10 bg-[rgba(20,14,10,0.55)] p-1 text-xs backdrop-blur-md sm:inline-flex"
-          >
-            {MODES.map(({ id, label, active }) => (
-              <button
-                key={id}
-                type="button"
-                aria-pressed={mode === id}
-                onClick={() => setMode(id)}
-                className={`min-h-8 cursor-pointer rounded-full px-3 py-1.5 font-medium transition-all ${
-                  mode === id ? active : "text-white/70 hover:text-white"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+        // Bottom-right, just left of the chat bubble (the bottom-left corner is taken by
+        // Next.js's dev-tools badge while developing).
+        <div className="pointer-events-none absolute bottom-6 right-[5.5rem] z-30">
+          <SceneSettings
+            time={time}
+            weather={weatherChoice}
+            onTimeChange={handleTimeChange}
+            onWeatherChange={handleWeatherChange}
+            liveSummary={liveSummary}
+          />
         </div>
       )}
     </>
