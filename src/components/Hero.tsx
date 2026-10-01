@@ -23,7 +23,9 @@ export default function Hero() {
   return (
     <section
       ref={sectionRef}
-      className="relative flex min-h-screen items-center justify-center overflow-hidden"
+      // On a portrait phone the copy sits in the upper third, over trees and sky, so the
+      // glowing cabins below stay visible instead of hiding behind the buttons.
+      className="relative flex min-h-screen items-center justify-center overflow-hidden portrait:items-start portrait:pt-[22vh]"
     >
       {/* Bottom layer: cinematic 3D scene (poster image until it is ready) */}
       <HeroBackdrop
@@ -38,7 +40,7 @@ export default function Hero() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8, ease: "easeOut" }}
-          className="font-lora text-5xl leading-tight text-[#E8EDEB] drop-shadow-[0_4px_18px_rgba(0,0,0,0.55)] md:text-7xl"
+          className="font-lora text-5xl leading-tight text-balance text-[#E8EDEB] drop-shadow-[0_4px_18px_rgba(0,0,0,0.55)] md:text-7xl"
         >
           Escape to the Heart of the Highlands
         </motion.h1>
@@ -57,7 +59,7 @@ export default function Hero() {
           </Link>
           <Link
             href="#rooms"
-            className="rounded-full border border-[#E8EDEB] px-8 py-3 text-sm font-medium text-[#E8EDEB] transition-colors hover:bg-[#E8EDEB]/10"
+            className="rounded-full border border-[#E8EDEB]/85 bg-black/25 px-8 py-3 text-sm font-medium text-[#E8EDEB] backdrop-blur-sm transition-colors hover:bg-[#E8EDEB]/15"
           >
             Explore Estate
           </Link>
