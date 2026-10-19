@@ -1,56 +1,70 @@
 # The Highland Estate
 
-**A luxury coffee-estate resort landing page** — cinematic, dark, and engineered for first impressions.
+**A fictional luxury coffee-estate resort site**, built with Next.js 16, React Three Fiber and Tailwind CSS. It has a live-weather 3D hero and an **LLM booking concierge** that checks availability, quotes prices and creates bookings through tool calls, with automatic failover across three model providers.
 
-![nextjs](https://img.shields.io/badge/Next.js-App_Router-000000?style=for-the-badge&logo=next.js&logoColor=white)
-![typescript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![tailwind](https://img.shields.io/badge/Tailwind_CSS-38BDF8?style=for-the-badge&logo=tailwind-css&logoColor=white)
-![madeby](https://img.shields.io/badge/made_by-tawsif--raza-141c2e?style=for-the-badge&logo=github&logoColor=e8c877)
+<img src="docs/screenshots/hero.jpg" alt="Hero: 'Escape to the Heart of the Highlands' over a dusk scene of lit cabins in misty forest, with scene-settings and chat buttons in the corner" width="100%">
 
 <table>
   <tr>
-    <td>
-      <div style="background: #1a2233; border-radius: 12px 12px 0 0; padding: 10px 14px;">
-        <span style="display: inline-block; width: 11px; height: 11px; border-radius: 50%; background: #ff5f56; margin-right: 6px;"></span>
-        <span style="display: inline-block; width: 11px; height: 11px; border-radius: 50%; background: #ffbd2e; margin-right: 6px;"></span>
-        <span style="display: inline-block; width: 11px; height: 11px; border-radius: 50%; background: #27c93f;"></span>
-      </div>
-      <div style="border-radius: 0 0 12px 12px; overflow: hidden; border: 1px solid #2a3550; border-top: none;">
-        <img src="docs/hero.jpg" width="100%" alt="The Highland Estate — hero view"/>
-      </div>
-    </td>
+    <td width="50%"><img src="docs/screenshots/rooms.jpg" alt="Rooms section with three room cards (Mist Cabin, Canopy Suite, Plantation Villa) showing size, view and nightly price"></td>
+    <td width="50%"><img src="docs/screenshots/concierge.jpg" alt="Estate Concierge chat panel open over the amenities section, with quick replies: View rooms, Check availability, Plantation tours"></td>
+  </tr>
+  <tr>
+    <td>Rooms</td>
+    <td>Estate Concierge (chat)</td>
   </tr>
 </table>
 
-A full-screen landing experience for a highland coffee estate — built like a luxury hospitality brand, not a template. Every section is paced for storytelling: the hero sets the mood, then rooms, estate experiences, coffee and gallery unfold with smooth, considered motion.
+<sub>Screenshots from a local production build (`next build && next start`) in Chromium at 1440×900. The hero uses WebGL; the other two were taken with the static fallback.</sub>
 
-## ✨ Features
+## What's interesting here
 
-| Feature | Details |
-| --- | --- |
-| **Cinematic hero** | A full-screen entrance that sets the mood before the first scroll |
-| **Storytelling sections** | Rooms, estate experiences, coffee & gallery — each with its own rhythm |
-| **Smooth-scroll navigation** | Calm, considered motion — no jarring jumps |
-| **Mobile-first responsive** | Polished at every viewport, phone to ultrawide |
-| **Optimized typography** | `next/font` (Geist) — crisp, fast, zero layout shift |
+### Estate Concierge: a tool-calling LLM agent (`src/app/api/chat/route.ts`)
+- **Scoped assistant.** The system prompt limits it to resort topics, with a fixed refusal for off-topic questions. Greetings are handled briefly, without pushing a booking.
+- **Three tools:** `check_availability`, `calculate_price` and `create_booking`, backed by `src/lib/booking-data.ts`. The model must confirm availability and price with the guest before booking.
+- **Provider failover:** Gemini 2.5 Flash, then Kimi (Moonshot), then Groq (`openai/gpt-oss-120b`). The three wire formats are normalized to one contract, so tool-call rounds work on any provider.
+- **Failure handling:**
+  - per-request timeouts
+  - network errors and non-JSON gateway pages fall through to the next provider
+  - quota exhaustion returns a friendlier 503
+  - a booking completed on an earlier round is still reported even if a later round fails
+- **Tests:** `route.test.ts` covers the failover cascade, timeouts, rate limits, malformed responses and a full tool-call round trip.
 
-## 🚀 Quick Start
+### Live-environment 3D hero (`src/components/hero3d/`)
+- A photographic layered scene in React Three Fiber, with fog, fireflies, birds and rain, and a camera rig.
+- A settings button switches time of day and weather. **Live** mode follows the real clock and OpenWeatherMap conditions for the estate's location (`/api/weather`, cached server-side).
+- `useQualityTier` drops to a static poster for no-WebGL, reduced-motion, data-saver or very weak devices.
+- `lib/hero-environment.ts` and `lib/hero-grade.ts` contain the time/weather logic and colour grading, with unit tests.
+
+### Page sections
+Rooms, amenities, a "journey" scene, live weather, gallery, testimonials and FAQ (`src/components/`).
+
+## Run it
 
 ```bash
-git clone https://github.com/tawsif-raza/highland-estate.git
-cd highland-estate && npm install
-npm run dev   # → http://localhost:3000
+npm ci
+cp .env.example .env.local   # add keys; everything is optional
+npm run dev                  # http://localhost:3000
+npm test                     # Vitest
+npm run lint && npm run build
 ```
 
-## 🏗️ Tech Stack
+| Variable | Used by | Without it |
+|---|---|---|
+| `GEMINI_API_KEY` | Concierge, primary | Falls through to the next provider |
+| `KIMI_API_KEY` | Concierge, fallback 1 | Falls through |
+| `GROQ_API_KEY` | Concierge, fallback 2 | With no provider keys, the concierge returns an error message |
+| `OPENWEATHERMAP_API_KEY` (alias `WEATHER_API_KEY`) | Live weather | Static climate data only |
 
-| Layer | Technology |
-| --- | --- |
-| Framework | Next.js (App Router) |
-| Language | TypeScript |
-| Styling | Tailwind CSS |
-| Fonts | `next/font` (Geist) |
+## Limitations
 
-## 📄 License
+- **Bookings are a demo:** they live in memory on the server and reset on redeploy. No payments.
+- The resort, rooms and prices are fictional.
 
-© 2026 Tawsif Khan — all rights reserved.
+## Stack
+
+Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS 4 · React Three Fiber / three.js · Framer Motion · Vitest
+
+## License
+
+© 2026 Tawsif Khan. All rights reserved.
